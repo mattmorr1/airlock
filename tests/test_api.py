@@ -8,7 +8,7 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, iter_route_contexts
 from pymongo.asynchronous.database import AsyncDatabase
 
-from api.main import app, policies
+from api.main import app
 from controller.db import Doc
 from controller.events import Doorbell
 from controller.policies import accept_validation_guarded
