@@ -39,4 +39,4 @@ The spec gives tasks ten states, including `awaiting_integration`, `validating`,
 
 ## Consequences
 
-- The acceptance check for this work is a solo end-to-end test: a stub job-worker runs on the real jobs library with canned results for `plan`, `launch`, `validate`, and `integrate`. It drives plan → approve → delegate → schedule → events against `atlas-local` through `httpx.ASGITransport`, and asserts that the event sequence has no gaps.
+- The acceptance check for this work is a solo end-to-end test: a stub job-worker runs on the real jobs library with canned results for `plan`, `launch`, `validate`, and `integrate`. It drives plan → approve → delegate → schedule → events against a throwaway Atlas test database through `httpx.ASGITransport`, and asserts that the event sequence has no gaps.

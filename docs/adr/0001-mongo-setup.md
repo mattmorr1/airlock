@@ -28,5 +28,5 @@ status: accepted
 
 ## Consequences
 
-- Tests run against the `mongodb/mongodb-atlas-local` container, because mongomock has neither transactions nor change streams. The demo runs on the Atlas Sandbox.
+- Atlas cloud is the one shared store for every real run, so provenance and harness learning are visible to all team members. Tests use the same cluster through `AIRLOCK_MONGO_URI`, but each test run gets its own `airlock_test_<uuid>` database, which is dropped at teardown and never touches `airlock`. Mongomock was rejected because it has neither transactions nor change streams, and a local container because it needs Docker on every machine. The costs are network latency per operation and M0 throughput limits on race tests.
 - Validators don't check relationships between documents (task ownership, DAG consistency). The controller checks those ([0005](0005-state-machine.md)).
