@@ -1,0 +1,25 @@
+[project]
+name = "airlock"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["fastapi", "pydantic", "pymongo>=4.13", "httpx"]
+
+[dependency-groups]
+dev = ["pytest", "anyio", "ruff", "pyright"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 160
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
