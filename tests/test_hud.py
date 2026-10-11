@@ -152,11 +152,11 @@ def plain(lines: list[str]) -> str:
     return "\n".join(re.sub(r"\x1b\[[0-9;]*m", "", s) for s in lines)
 
 
-def test_script_prints_upstream_then_four_line_sprite_and_caches(stub: str, tmp_path: Path) -> None:
+def test_script_prints_upstream_then_five_line_sprite_and_caches(stub: str, tmp_path: Path) -> None:
     Stub.reply = WATCHING
     lines = run(stub, tmp_path)
-    assert lines[0] == "upstream:sess_abc" and len(lines) == 5
-    assert "\x1b[38;5;" in lines[1] and "▀" in lines[1]
+    assert lines[0] == "upstream:sess_abc" and len(lines) == 6
+    assert "\x1b[38;2;" in lines[1] and "▀" in "".join(lines[1:])
     text = plain(lines)
     assert "merging · task_abc" in text and "merged 1/3" in text and "harness hv_002 gen 2" in text and "leases ok" in text
     assert Stub.seen == [("/v1/hud?session_id=sess_abc", "Bearer hk-secret")]
@@ -181,6 +181,8 @@ def test_script_offline_tokenless_and_narrow(closed_port: str, stub: str, tmp_pa
 def test_idle_hatch_moves_a_little_but_rarely() -> None:
     sys.path.insert(0, str(HUD.parent))
     h: Any = importlib.import_module("hud")
-    poses: list[list[str]] = [h.halfblocks(h.pose("content", t), h.DRIFT[(t // 6) % len(h.DRIFT)]) for t in range(60)]
+    poses: list[list[str]] = [h.halfblocks(h.frame_at("idle", t * 1000), h.DRIFT[(t // 6) % len(h.DRIFT)]) for t in range(60)]
     changes = sum(a != b for a, b in itertools.pairwise(poses))
-    assert 0 < changes <= 30 and len({len(plain(p).splitlines()) for p in poses}) == 1
+    assert 0 < changes <= 30 and {len(plain(p).splitlines()) for p in poses} == {5}
+    assert all(len(f) == 10 and len(r) == 12 and set(r) <= {*h.PAL, "."} for _, frames in h.STATES.values() for f in frames for r in f)
+    assert all(len(holds) == len(frames) for holds, frames in h.STATES.values())

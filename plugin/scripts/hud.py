@@ -13,14 +13,41 @@ from typing import Any
 
 TIMEOUT = 0.3
 HOME = Path.home() / ".airlock"
-PAL = {"W": "#F2F5FA", "G": "#AEBBCD", "D": "#23263A", "S": "#4A5068", "B": "#3D7BF7", "E": "#FFFFFF", "C": "#38BDF8", "P": "#F9A8D4",
-       "A": "#34D399", "L": "#60A5FA", "Y": "#FBBF24", "X": "#F43F5E"}
-# 9x8 chibi astronaut: helmet with a 3-row visor (sparkle over iris eyes, blush below), blue zip, cuffs and boot stripes; row 5 col 4 is the chest light.
-BASE = ["..WWWWG..", ".WWWWWWG.", ".WDDDDDG.", ".WDDDDDG.", ".WDDDDDG.", ".WWW?WWG.", ".BWWBWGB.", "..BW.WB.."]
-LOOK = {"center": (3, 5), "right": (4, 6), "left": (2, 4)}
-WAVE = {2: "G", 3: "B"}  # raised hand at column 0 beside the visor
-ARMS_UP = {0: "G.WWWWG.G", 1: "BWWWWWWGB", 5: "..WW?WWG.", 6: "..WWBWG.."}
-TONE = {"content": "#34D399", "watching": "#60A5FA", "waiting": "#FBBF24", "alarm": "#F43F5E", "unwell": "#A3E635"}
+# Hatch: 12x10 astronaut (dome, blue visor with tall eyes, blue collar, chest light, boots); "." keeps the terminal backdrop.
+PAL: dict[str, tuple[int, int, int]] = {"W": (242, 245, 250), "G": (174, 187, 205), "N": (28, 43, 90), "V": (46, 91, 216), "E": (234, 243, 255),
+                                        "L": (156, 194, 255), "B": (61, 123, 247), "A": (52, 211, 153), "R": (244, 63, 94), "Y": (251, 191, 36)}
+_HEAD, _VISOR, _COLLAR, _LEGS = [".....WW.....", "..WWWWWWWG..", ".WWLVVVVVWG."], ".WWNVVVVNWG.", "..GBBBBBBG..", ["..GWWWWWWG..", "...BB..BB..."]
+_EYES = {"open": [".WVVEVVEVNG."] * 2, "shut": [".WVVVVVVVNG.", ".WVVEEVEENG."], "happy": [".WVVEEVEENG.", ".WVVVVVVVNG."],
+         "right": [".WVVVEVVENG."] * 2, "left": [".WVEVVEVVNG."] * 2, "wide": [".WVEEVVEENG."] * 2, "droop": [".WVVVVVVVNG.", ".WVEEVVEENG."]}
+
+
+def _f(eyes: str, chest: str, **rows: str) -> list[str]:
+    grid = [*_HEAD, *_EYES[eyes], _VISOR, _COLLAR, rows.pop("body", f".WGWW{chest}{chest}WWGW."), *_LEGS]
+    for k, row in rows.items():
+        grid[int(k[1:])] = row
+    return grid
+
+
+def _wave(eyes: str, chest: str, high: bool) -> list[str]:
+    """Right hand raised beside the visor, at visor height or one row higher."""
+    up = {"r4": _EYES[eyes][1][:11] + "W"} if high else {"r5": ".WWNVVVVNWGW"}
+    return _f(eyes, chest, body=f".WGWW{chest}{chest}WWG..", **up)
+
+
+STATES: dict[str, tuple[list[int], list[list[str]]]] = {
+    "idle": ([3200, 450, 3200, 450, 900, 900, 900], [_f("open", "A"), _f("shut", "A"), _f("open", "A"), _f("shut", "A"), _wave("open", "A", False),
+                                                     _wave("open", "A", True), _wave("open", "A", False)]),
+    "success": ([900, 600, 600, 900], [_f("happy", "A"), _wave("happy", "A", False), _wave("happy", "A", True), _wave("happy", "A", False)]),
+    "thinking": ([1100, 700, 1100, 700], [_f("right", "L"), _f("open", "L"), _f("left", "L"), _f("open", "L")]),
+    "working": ([600, 600, 600, 600], [_f("open", "B"), _f("open", "L"), _f("open", "B"), _f("open", "W")]),
+    "alert": ([800, 800, 2400, 400], [_f("wide", "Y"), _f("wide", "W"), _f("wide", "Y"), _f("shut", "Y")]),
+    "alarm": ([500, 500], [_f("wide", "R", r1="W.WWWWWWWG.W", r2="WWWLVVVVVWGW", body="..GWWRRWWG.."), _f("wide", "W", body=".WGWWRRWWGW.")]),
+    "sleep": ([1600, 1600], [_f("droop", "G"), _f("droop", "N")]),
+}
+HATCH = {"content": "idle", "watching": "working", "waiting": "alert", "alarm": "alarm", "unwell": "sleep"}
+HATCH_BY_REASON = {"done": "success", "planning": "thinking"}
+TONE = {"content": (52, 211, 153), "watching": (116, 229, 255), "waiting": (251, 191, 36), "alarm": (244, 63, 94), "unwell": (160, 171, 184)}
+MUTED = (160, 171, 184)
 FACE = {"content": "(^_^)", "watching": "(o_o)", "waiting": "(-_-)", "alarm": "(O_O)!", "unwell": "(x_x)"}
 DRIFT = [0, 0, 1, 2, 2, 1, 0, 0, 0, 1]  # columns, one step per 6s: a slow wander that never jumps
 DRIFT_MAX, UP, DN = max(DRIFT), "\u2580", "\u2584"
@@ -34,51 +61,31 @@ def word(d: dict[str, Any]) -> str:
     return WORD.get((d["mood"], d["reason"])) or str(d["mood"])
 
 
-def frame(chest: str, eyes: str = "open", look: str = "center", wave: bool = False, arms_up: bool = False) -> list[str]:
-    g = [list(r.replace("?", chest)) for r in (BASE if not arms_up else [ARMS_UP.get(i, r) for i, r in enumerate(BASE)])]
-    if eyes == "dizzy":
-        g[2:5] = [[("S" if c == "D" else c) for c in r] for r in g[2:5]]
-    for c in LOOK[look]:
-        if eyes in ("open", "shock"):
-            g[2][c], g[3][c] = "E", "E" if eyes == "shock" else "C"
-        else:
-            g[3][c] = {"shut": "C", "dizzy": "G"}[eyes]
-    if eyes in ("open", "shut"):
-        g[4][2] = g[4][6] = "P"
-    for row, ch in (WAVE.items() if wave else ()):
-        g[row][0] = ch
-    return ["".join(r) for r in g]
+def frame_at(state: str, ms: int) -> list[str]:
+    """The frame showing `ms` into the state's loop; the statusline samples one per refresh, so short blinks may be skipped."""
+    holds, frames = STATES[state]
+    t = ms % sum(holds)
+    for hold, fr in zip(holds, frames, strict=True):
+        if t < hold:
+            return fr
+        t -= hold
+    raise AssertionError("unreachable: t < sum(holds)")
 
 
-def pose(mood: str, t: int) -> list[str]:
-    """Mostly still: content blinks every 7s and waves once a minute; busy moods animate gently, alarm is meant to grab attention."""
-    if mood == "content":
-        return frame("A", "shut" if t % 7 == 0 else "open", wave=t % 60 in (30, 31))
-    if mood == "watching":
-        return frame("L", look=("center", "right", "center", "left")[(t // 2) % 4])
-    if mood == "waiting":
-        return frame("Y" if (t // 2) % 2 else "W", "open" if t % 9 == 0 else "shut")
-    if mood == "alarm":
-        return frame("X", "shock", arms_up=bool(t % 2))
-    return frame("G", "dizzy")
-
-
-def c256(hex_: str) -> int:
-    rgb = [int(hex_[i:i + 2], 16) for i in (1, 3, 5)]
-    lv = [0, 95, 135, 175, 215, 255]
-    cube = [min(range(6), key=lambda k: abs(lv[k] - c)) for c in rgb]
-    gray = min(range(24), key=lambda k: abs(8 + 10 * k - sum(rgb) / 3))
-    dc, dg = sum((lv[q] - c) ** 2 for q, c in zip(cube, rgb, strict=True)), sum((8 + 10 * gray - c) ** 2 for c in rgb)
-    return 16 + 36 * cube[0] + 6 * cube[1] + cube[2] if dc <= dg else 232 + gray
+def fg(rgb: tuple[int, int, int]) -> str:
+    return f"\x1b[38;2;{rgb[0]};{rgb[1]};{rgb[2]}m"
 
 
 def halfblocks(grid: list[str], shift: int) -> list[str]:
     def cell(top: str, bot: str) -> str:
-        t, b = PAL.get(top), PAL.get(bot)
-        if t and b:
-            return f"\x1b[38;5;{c256(t)}m\x1b[48;5;{c256(b)}m{UP}\x1b[0m"
-        return f"\x1b[38;5;{c256(t or b or '#000000')}m{UP if t else DN}\x1b[0m" if t or b else " "
-    return [" " * shift + "".join(cell(a, b) for a, b in zip(grid[r], grid[r + 1], strict=True)) + " " * (DRIFT_MAX - shift) for r in range(0, len(grid), 2)]
+        if top == "." and bot == ".":
+            return " "
+        if top == ".":
+            return f"{fg(PAL[bot])}{DN}\x1b[0m"
+        b = PAL.get(bot)
+        return fg(PAL[top]) + (f"\x1b[48;2;{b[0]};{b[1]};{b[2]}m" if b else "") + UP + "\x1b[0m"
+    return [" " * shift + "".join(cell(a, b) for a, b in zip(grid[r], grid[r + 1], strict=True)) + " " * (DRIFT_MAX - shift)
+            for r in range(0, len(grid), 2)]
 
 
 def age(s: int) -> str:
@@ -106,11 +113,10 @@ def stats(d: dict[str, Any]) -> list[str]:
         busy = [f"{p[k]} {k.replace('_required', '')}" for k in ("integrating", "validating", "running", "repair_required") if p.get(k)]
         extra = [f"ready: {', '.join(p['ready'])}"] * bool(p["ready"]) + [f"{k} try {n}/2" for k, n in p["retries"].items()]
         lines.append(" · ".join([f"merged {p['accepted']}/{p['total']} {bar(p['accepted'], p['total'])}", *busy, *extra]))
-    leases = f"{j['expired']} lease expired" if j["expired"] else "leases ok"
-    harness = f"harness {h['version']} gen {h['generation']} \u00b7 epoch {h['epoch']}"
-    lines.append(f"jobs {j['running']} running \u00b7 {j['queued']} queued \u00b7 {leases} \u00b7 {harness}")
+    lines.append(f"jobs {j['running']} running \u00b7 {j['queued']} queued \u00b7 " + (f"{j['expired']} lease expired" if j["expired"] else "leases ok"))
     last = f" \u00b7 last {d['last']['type']} {age(d['last']['age_s'])} ago" if d.get("last") else ""
-    lines.append(f"today {today['done']} done \u00b7 {today['merged']} merged \u00b7 {today['failed']} failed \u00b7 {today['promoted']} promoted{last}")
+    lines.append(f"harness {h['version']} gen {h['generation']} \u00b7 epoch {h['epoch']}{last}")
+    lines.append(f"today {today['done']} done \u00b7 {today['merged']} merged \u00b7 {today['failed']} failed \u00b7 {today['promoted']} promoted")
     return lines
 
 
@@ -150,15 +156,14 @@ def columns() -> int:
         return 120
 
 
-def render(d: dict[str, Any], t: int, cols: int) -> list[str]:
-    tone, dim, text = c256(TONE[d["mood"]]), 245, stats(d)
+def render(d: dict[str, Any], now: float, cols: int) -> list[str]:
+    tone, dim, text = fg(TONE[d["mood"]]), fg(MUTED), stats(d)
     if cols < 70:
-        return [f"\x1b[38;5;{tone}m{FACE[d['mood']]} {text[0][:cols - 8]}\x1b[0m"]
-    room = cols - 12 - DRIFT_MAX - 2
-    w = word(d)
-    body = [(f"\x1b[38;5;{tone}m{w}\x1b[0m\x1b[38;5;{dim}m{s[len(w):room]}\x1b[0m" if i == 0 else f"\x1b[38;5;{dim}m{s[:room]}\x1b[0m")
-            for i, s in enumerate(text)]
-    sprite = halfblocks(pose(d["mood"], t), DRIFT[(t // 6) % len(DRIFT)])
+        return [f"{tone}{FACE[d['mood']]} {text[0][:cols - 8]}\x1b[0m"]
+    room, w = cols - 12 - DRIFT_MAX - 2, word(d)
+    body = [f"{tone}{w}\x1b[0m{dim}{s[len(w):room]}\x1b[0m" if i == 0 else f"{dim}{s[:room]}\x1b[0m" for i, s in enumerate(text)]
+    state = HATCH_BY_REASON.get(d["reason"]) or HATCH[d["mood"]]
+    sprite = halfblocks(frame_at(state, int(now * 1000)), DRIFT[(int(now) // 6) % len(DRIFT)])
     return [f"{s}  {body[i] if i < len(body) else ''}".rstrip() for i, s in enumerate(sprite)]
 
 
@@ -170,7 +175,7 @@ def main() -> int:
             print(f"airlock hud: upstream exited {up.returncode}: {up.stderr.decode(errors='replace')[:200]}", file=sys.stderr)
         sys.stdout.write(up.stdout.decode(errors="replace").rstrip("\n") + "\n" if up.stdout.strip() else "")
     session = json.loads(raw or b"{}").get("session_id", "")
-    print("\n".join(render(fetch(session), int(time.time()), columns())))
+    print("\n".join(render(fetch(session), time.time(), columns())))
     return 0
 
 
