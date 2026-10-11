@@ -8,9 +8,10 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
 from pymongo.asynchronous.database import AsyncDatabase
 
-from api.main import app
+from api.main import app, policies
 from controller.db import Doc
-from controller.states import TaskState, transition
+from controller.policies import accept_validation_guarded
+from controller.states import TaskState, ValidationDecision, transition
 
 pytestmark = pytest.mark.anyio
 TOKENS = {"operator": "op-secret", "bridge": "br-secret", "hook": "hk-secret", "reader": "rd-secret"}
@@ -146,12 +147,52 @@ async def test_approve_records_approval_and_event(client: httpx.AsyncClient, db:
     assert (again.status_code, again.json()["error"]["code"]) == (409, "STALE_REVISION")
 
 
+async def test_rollback_to_unvalidated_is_409_and_validated_rollback_replays(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
+    proj = await project(client, "rb")
+    before = await db["projects"].find_one({"_id": proj})
+    r = await client.post(f"/v1/projects/{proj}/rollback", headers=auth("operator", "rb-1"), json={"harness_version_id": "hv_999"})
+    assert (r.status_code, r.json()["error"]["code"]) == (409, "NOT_VALIDATED")
+    assert await db["projects"].find_one({"_id": proj}) == before
+    ok, replay = [await client.post(f"/v1/projects/{proj}/rollback", headers=auth("operator", "rb-2"), json={"harness_version_id": "hv_001"})
+                  for _ in range(2)]
+    assert (ok.status_code, ok.json(), replay.content) == (200, {"project_id": proj, "active_harness_version_id": "hv_001"}, ok.content)
+    p = await db["projects"].find_one({"_id": proj})
+    assert p is not None and (p["harness_generation"], p["constraint_epoch"], p["event_seq"]) == (2, 1, 1)
+
+
+async def test_bridge_token_on_rollback_and_revoke_is_403(client: httpx.AsyncClient) -> None:
+    proj = await project(client, "pol-403")
+    rs = [await client.post(f"/v1/projects/{proj}/rollback", headers=auth("bridge", "pol-403-1"), json={"harness_version_id": "hv_001"}),
+          await client.post(f"/v1/projects/{proj}/revoke", headers=auth("bridge", "pol-403-2"))]
+    assert [(r.status_code, r.json()["error"]["code"]) for r in rs] == [(403, "FORBIDDEN")] * 2
+
+
+async def test_revoke_bumps_epoch_once_per_key_and_stales_inflight_validation(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
+    proj = await project(client, "rv")
+    run: Doc = {"project_id": proj, "constraint_epoch": 1}
+    first, replay = [await client.post(f"/v1/projects/{proj}/revoke", headers=auth("operator", "rv-1")) for _ in range(2)]
+    assert (first.status_code, first.json(), replay.content) == (200, {"project_id": proj, "constraint_epoch": 2}, first.content)
+    p = await db["projects"].find_one({"_id": proj})
+    assert p is not None and p["constraint_epoch"] == 2
+    events = await db["events"].find({"stream_id": proj}).to_list()
+    assert [(e["type"], e["actor_id"], e["payload"]) for e in events] == [("project.revoked", "operator", {"constraint_epoch": 2})]
+    async with db.client.start_session() as s:
+        assert await s.with_transaction(lambda s: accept_validation_guarded(s, db, ValidationDecision.PASS, run)) == ValidationDecision.INCONCLUSIVE
+
+
+async def test_revoke_unknown_project_is_404(client: httpx.AsyncClient) -> None:
+    r = await client.post("/v1/projects/proj_missing/revoke", headers=auth("operator", "rv-404"))
+    assert (r.status_code, r.json()["error"]["code"]) == (404, "NOT_FOUND")
+
+
 def deps(d: Dependant) -> list[Dependant]:
     return [d, *(x for sub in d.dependencies for x in deps(sub))]
 
 
 async def test_every_route_and_dependency_is_async() -> None:
-    routes = [r for r in app.routes if isinstance(r, APIRoute)]
-    assert {r.path for r in routes} == {"/v1/projects", "/v1/tasks", "/v1/tasks/{task_id}/approve", "/v1/tasks/{task_id}", "/v1/jobs/{job_id}"}
+    # FastAPI >= 0.143 wraps included routers in an opaque route, so their APIRoutes are listed from the router itself.
+    routes = [r for r in [*app.routes, *policies.router.routes] if isinstance(r, APIRoute)]
+    assert {r.path for r in routes} == {"/v1/projects", "/v1/tasks", "/v1/tasks/{task_id}/approve", "/v1/tasks/{task_id}", "/v1/jobs/{job_id}",
+                                        "/v1/projects/{project_id}/rollback", "/v1/projects/{project_id}/revoke"}
     sync = [(r.path, d.call) for r in routes for d in deps(r.dependant) if d.call and not inspect.iscoroutinefunction(d.call)]
     assert sync == []

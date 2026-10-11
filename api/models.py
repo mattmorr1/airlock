@@ -49,3 +49,7 @@ class Approved(Strict):
     status: TaskState
     contract_digest: str
     constraint_epoch: int
+
+
+class Rollback(Strict):
+    harness_version_id: Annotated[str, Field(pattern=r"^hv_")]

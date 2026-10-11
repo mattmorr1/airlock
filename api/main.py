@@ -119,3 +119,8 @@ async def get_task(task_id: str, db: DB, _: Annotated[Role, Depends(require(Cap.
 @app.get("/v1/jobs/{job_id}")
 async def get_job(job_id: str, db: DB, _: Annotated[Role, Depends(require(Cap.READ))]) -> Doc:
     return await find(db, "jobs", job_id)
+
+
+from api import policies  # noqa: E402  # imported last: it imports DB, Key, find from this module
+
+app.include_router(policies.router)
