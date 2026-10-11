@@ -119,3 +119,8 @@ async def get_task(task_id: str, db: DB, _: Annotated[Role, Depends(require(Cap.
 @app.get("/v1/jobs/{job_id}")
 async def get_job(job_id: str, db: DB, _: Annotated[Role, Depends(require(Cap.READ))]) -> Doc:
     return await find(db, "jobs", job_id)
+
+
+from api.delegations import router as delegations  # noqa: E402  (circular: it imports DB, Key, find from here)
+
+app.include_router(delegations)

@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 from fastapi.dependencies.models import Dependant
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from pymongo.asynchronous.database import AsyncDatabase
 
 from api.main import app
@@ -151,7 +151,8 @@ def deps(d: Dependant) -> list[Dependant]:
 
 
 async def test_every_route_and_dependency_is_async() -> None:
-    routes = [r for r in app.routes if isinstance(r, APIRoute)]
-    assert {r.path for r in routes} == {"/v1/projects", "/v1/tasks", "/v1/tasks/{task_id}/approve", "/v1/tasks/{task_id}", "/v1/jobs/{job_id}"}
+    routes = [r for c in iter_route_contexts(app.routes) if isinstance(r := c.original_route, APIRoute)]
+    assert {r.path for r in routes} == {"/v1/projects", "/v1/tasks", "/v1/tasks/{task_id}/approve", "/v1/tasks/{task_id}", "/v1/jobs/{job_id}",
+                                       "/v1/tasks/{task_id}/delegations"}
     sync = [(r.path, d.call) for r in routes for d in deps(r.dependant) if d.call and not inspect.iscoroutinefunction(d.call)]
     assert sync == []
