@@ -167,6 +167,22 @@ def render(d: dict[str, Any], now: float, cols: int) -> list[str]:
     return [f"{s}  {body[i] if i < len(body) else ''}".rstrip() for i, s in enumerate(sprite)]
 
 
+DEMO = [("content", "idle"), ("watching", "planning"), ("watching", "merging"), ("waiting", "approve"), ("alarm", "repair"), ("content", "done"),
+        ("unwell", "stale")]
+
+
+def demo(now: float) -> dict[str, Any]:
+    """AIRLOCK_HUD_DEMO=1: cycle every mood with sample stats, 8s each, so the sprite can be previewed without a running API."""
+    mood, reason = DEMO[int(now // 8) % len(DEMO)]
+    accepted = {"done": 3, "approve": 0, "planning": 0}.get(reason, 1)
+    return {"mood": mood, "reason": reason, "fetched_at": now - 95, "today": {"done": 4, "merged": 9, "failed": 1, "promoted": 1},
+            "task": {"id": "task_demo42", "status": "running", "request": "Implement login and sessions", "age_s": 300},
+            "progress": {"total": 3, "accepted": accepted, "integrating": int(reason == "merging"), "repair_required": int(reason == "repair"),
+                         "ready": ["service", "routes"] * (reason == "merging"), "retries": {"routes": 2} if reason == "repair" else {}},
+            "jobs": {"running": int(reason == "merging"), "queued": 1, "expired": 0}, "harness": {"version": "hv_002", "generation": 2, "epoch": 1},
+            "last": {"type": "delegation.accepted", "age_s": 12}}
+
+
 def main() -> int:
     raw = sys.stdin.buffer.read()
     if len(sys.argv) > 1:
@@ -175,7 +191,8 @@ def main() -> int:
             print(f"airlock hud: upstream exited {up.returncode}: {up.stderr.decode(errors='replace')[:200]}", file=sys.stderr)
         sys.stdout.write(up.stdout.decode(errors="replace").rstrip("\n") + "\n" if up.stdout.strip() else "")
     session = json.loads(raw or b"{}").get("session_id", "")
-    print("\n".join(render(fetch(session), time.time(), columns())))
+    now = time.time()
+    print("\n".join(render(demo(now) if os.environ.get("AIRLOCK_HUD_DEMO") else fetch(session), now, columns())))
     return 0
 
 
