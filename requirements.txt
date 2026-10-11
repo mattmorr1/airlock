@@ -1,0 +1,9 @@
+pymongo>=4.6
+pydantic>=2.6
+pydantic-settings>=2.2
+fastapi>=0.110
+uvicorn>=0.29
+requests>=2.31
+pytest>=8.0
+# optional, only needed for the real managed-worker backend:
+# claude-agent-sdk
