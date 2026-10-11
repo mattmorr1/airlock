@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -67,11 +68,15 @@ async def pre_tool_use(body: HookInput, db: DB, _: Hook) -> Doc:
     return {"active": True}
 
 
+def ready_keys(task: Doc, delegations: list[Doc]) -> list[str]:
+    """Contract assignments not yet delegated whose dependencies are all accepted."""
+    seen, accepted = {d["assignment_key"] for d in delegations}, {d["assignment_key"] for d in delegations if d["status"] == DelegationState.ACCEPTED}
+    return [a["key"] for a in task["contract"]["assignments"] if a["key"] not in seen and set(a["depends_on"]) <= accepted]
+
+
 def next_step(task: Doc, delegations: list[Doc]) -> str:
-    tid, by_key = task["_id"], {d["assignment_key"]: d for d in delegations}
-    accepted = {k for k, d in by_key.items() if d["status"] == DelegationState.ACCEPTED}
-    repair = [k for k, d in by_key.items() if d["status"] == DelegationState.REPAIR_REQUIRED]
-    ready = [a["key"] for a in task["contract"]["assignments"] if a["key"] not in by_key and set(a["depends_on"]) <= accepted]
+    tid, ready = task["_id"], ready_keys(task, delegations)
+    repair = [d["assignment_key"] for d in delegations if d["status"] == DelegationState.REPAIR_REQUIRED]
     live = sum(d["status"] in LIVE for d in delegations)
     steps = [*(f"`{k}` is repair_required: call airlock_delegate({tid!r}, {k!r})" for k in repair),
              *(f"`{k}` is ready: call airlock_delegate({tid!r}, {k!r})" for k in ready),
@@ -90,3 +95,60 @@ async def lifecycle(body: HookInput, db: DB, _: Hook) -> Doc:
         return {"active": False, "systemMessage": f"Airlock task {tid} is still being planned; check back with airlock_status({tid!r}, 50)"}
     delegations = await db["delegations"].find({"task_id": tid}, {"assignment_key": 1, "status": 1}).to_list()
     return {"active": True, "decision": "block", "reason": f"Airlock task {tid} is {status}. Next: {next_step(task, delegations)}"}
+
+
+TODAY_TYPES = {"task.completed": "done", "delegation.accepted": "merged", "delegation.failed": "failed", "task.failed": "failed", "job.failed": "failed",
+               "harness.promoted": "promoted"}
+
+
+def mood(task: Doc | None, delegations: list[Doc], expired: int) -> tuple[str, str]:
+    """(mood, reason) for the HUD sprite; alarm outranks waiting, which outranks watching."""
+    if task is None or task["status"] in (TaskState.COMPLETED, TaskState.CANCELLED):
+        return "content", "done" if task else "idle"
+    states = {d["status"] for d in delegations}
+    if task["status"] == TaskState.FAILED or DelegationState.FAILED in states:
+        return "alarm", "failed"
+    if DelegationState.REPAIR_REQUIRED in states:
+        return "alarm", "repair"
+    if expired:
+        return "alarm", "lease"
+    if task["status"] in (TaskState.DRAFT, TaskState.PLANNED):
+        return ("waiting", "approve") if task["status"] == TaskState.PLANNED else ("watching", "planning")
+    if states & set(LIVE):
+        return "watching", "merging"
+    return ("waiting", "delegate") if ready_keys(task, delegations) else ("watching", "merging")
+
+
+@router.get("/v1/hud")
+async def hud(session_id: Name, db: DB, _: Hook) -> Doc:
+    """Compact status for the statusline sprite: the session's latest task, merge progress, queue, harness, and today's project totals."""
+    now = datetime.now(UTC)
+    task = await db["tasks"].find_one({"parent_session_id": session_id}, sort=[("created_at", -1)])
+    if task is None:
+        return {"mood": "content", "reason": "idle", "task": None}
+    tid = task["_id"]
+    delegations = await db["delegations"].find({"task_id": tid}, {"assignment_key": 1, "status": 1, "attempt": 1}).to_list()
+    jobs = await db["jobs"].find({"task_id": tid, "status": {"$in": ["queued", "running"]}}, {"status": 1, "lease": 1, "available_at": 1}).to_list()
+    leases: list[Doc] = [j.get("lease") or {} for j in jobs if j["status"] == "running"]
+    expiries: list[datetime | None] = [lease.get("expires_at") for lease in leases]
+    expired = sum(e is not None and e < now for e in expiries)
+    project = await find(db, "projects", task["project_id"])
+    last = await db["events"].find_one({"stream_id": tid}, {"type": 1, "created_at": 1}, sort=[("sequence", -1)])
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # ponytail: unindexed (project_id, created_at) scan over today's events; add an index if events grow past demo scale.
+    match = {"project_id": task["project_id"], "created_at": {"$gte": midnight}, "type": {"$in": list(TODAY_TYPES)}}
+    counts: list[Doc] = await (await db["events"].aggregate([{"$match": match}, {"$group": {"_id": "$type", "n": {"$sum": 1}}}])).to_list()
+    today = dict.fromkeys(TODAY_TYPES.values(), 0)
+    for c in counts:
+        today[TODAY_TYPES[c["_id"]]] += c["n"]
+    by_state = {s: sum(d["status"] == s for d in delegations) for s in DelegationState}
+    m, reason = mood(task, delegations, expired)
+    return {"mood": m, "reason": reason, "today": today,
+            "task": {"id": tid, "status": task["status"], "request": task.get("request", ""), "age_s": int((now - task["created_at"]).total_seconds())},
+            "progress": {"total": len(task.get("contract", {}).get("assignments", [])), **{s.value: n for s, n in by_state.items()},
+                         "ready": ready_keys(task, delegations) if task.get("contract") else [],
+                         "retries": {d["assignment_key"]: d["attempt"] for d in delegations if d.get("attempt", 1) > 1}},
+            "jobs": {"running": sum(j["status"] == "running" for j in jobs), "queued": sum(j["status"] == "queued" for j in jobs), "expired": expired},
+            "harness": {"version": project.get("active_harness_version_id"), "generation": project.get("harness_generation"),
+                        "epoch": project.get("constraint_epoch")},
+            "last": {"type": last["type"], "age_s": int((now - last["created_at"]).total_seconds())} if last else None}
