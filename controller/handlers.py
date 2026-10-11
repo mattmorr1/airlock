@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import mkdtemp
@@ -63,7 +64,9 @@ def _launch_sync(wr: Doc, dele: Doc) -> Doc:
     checkout = Path(mkdtemp(prefix=f"ckout-{wr['_id'][-8:]}-"))
     base_tree = artifacts.get_tree(wr["input_artifact_id"])
     artifacts.materialize(wr["input_artifact_id"], checkout)
-    fixture = wr.get("dev_fixture") or dele.get("dev_fixture")
+    fixture = wr.get("dev_fixture") or dele.get("dev_fixture") or os.environ.get("AIRLOCK_DEV_FIXTURE")
+    if fixture == "auto":  # repair demo: first attempt is faulty, the repair attempt is fixed
+        fixture = "bulk_faulty" if wr.get("attempt", 1) == 1 else "bulk_fixed"
     if fixture:  # dev/demo convenience: a scripted edit stands in for the SDK agent
         FIXTURES[fixture](checkout, {})
     else:
@@ -262,3 +265,38 @@ async def handle_evolve(db: AsyncDatabase[Doc], job: Doc) -> None:
             await promote(s, db, evo["_id"], "promotion_controller")
 
     await complete(db, job["_id"], owner, fence, apply, result_ref=evo["_id"])
+
+
+# --------------------------------------------------------------------------- #
+# plan: materialize the repo for the planner and run A's plan job             #
+# --------------------------------------------------------------------------- #
+def _materialize_base(base_artifact_id: str) -> str:
+    from controller import artifacts
+    checkout = Path(mkdtemp(prefix="plan-"))
+    artifacts.materialize(base_artifact_id, checkout)
+    return str(checkout)
+
+
+async def _stub_propose(request: str, checkout: Path, errors=None) -> dict:
+    """Deterministic fallback planner (no SDK): the bulk-update contract."""
+    return {
+        "constraints": ["An update may only touch the caller's own items", "All-or-nothing: either every update applies or none"],
+        "acceptance": ["a valid batch updates every listed item",
+                       "a mixed-owner batch is rejected AND leaves every affected row unchanged",
+                       "an identical retry with the same Idempotency-Key returns the original result",
+                       "reusing a key with a different payload returns 409"],
+        "interfaces": {"endpoint": "PATCH /api/v1/items/bulk", "idempotency": "Idempotency-Key request header"},
+        "assignments": [{"key": "bulk", "objective": "Implement PATCH /api/v1/items/bulk: atomic bulk update with idempotency",
+                         "depends_on": [], "file_scope": ["app/**"], "profile_key": "bounded-items-worker"}],
+    }
+
+
+async def handle_plan(db: AsyncDatabase[Doc], job: Doc) -> None:
+    """Run A's plan job with a materialized checkout; real SDK planner by default,
+    deterministic stub when AIRLOCK_STUB_PLAN is set."""
+    from controller.planner import run_plan_job, sdk_propose
+    owner, fence = job["lease"]["owner"], job["lease"]["fence"]
+    task = await db["tasks"].find_one({"_id": job["task_id"]})
+    checkout = Path(await asyncio.to_thread(_materialize_base, task["base_artifact_id"]))
+    propose = _stub_propose if os.environ.get("AIRLOCK_STUB_PLAN") else sdk_propose
+    await run_plan_job(db, job, owner, fence, checkout, propose)

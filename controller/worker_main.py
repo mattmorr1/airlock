@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 
 from controller import db as dbmod
-from controller.handlers import handle_evolve, handle_integrate, handle_launch, handle_validate
+from controller.handlers import handle_evolve, handle_integrate, handle_launch, handle_plan, handle_validate
 from controller.scheduler import run_worker
 from controller.states import JobKind, Prefix, new_id
 
@@ -24,6 +24,7 @@ async def main() -> None:
     async with dbmod.client() as c:
         db = dbmod.database(c)
         dispatch = {
+            JobKind.PLAN: lambda job: handle_plan(db, job),
             JobKind.LAUNCH: lambda job: handle_launch(db, job),
             JobKind.VALIDATE: lambda job: handle_validate(db, job),
             JobKind.INTEGRATE: lambda job: handle_integrate(db, job),
