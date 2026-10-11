@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,8 +17,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AIRLOCK_", extra="ignore")
 
     # --- Atlas control-plane database (never shared with workers / app) ---
+    # db_name reads AIRLOCK_DB to match Person A's controller/db.py, so B's
+    # (sync) artifact/GridFS client and A's async client share one database.
     mongo_uri: str = "mongodb://localhost:27017"
-    db_name: str = "airlock"
+    db_name: str = Field(default="airlock", validation_alias="AIRLOCK_DB")
     gridfs_bucket: str = "fs"
 
     # --- Execution backend ---------------------------------------------------
