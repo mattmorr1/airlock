@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Airlock — MongoDB Hackathon</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/theme/black.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/plugin/highlight/monokai.css">
+<style>
+  :root{
+    --mint:#00ED64;        /* MongoDB green */
+    --mint-dim:#13aa52;
+    --ink:#0b0f14;
+    --panel:#0f1620;
+    --line:#1f2a36;
+    --red:#ff7b72;
+    --amber:#ffcf56;
+    --txt:#d7e0ea;
+    --mut:#8aa0b4;
+  }
+  .reveal{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:var(--txt);}
+  .reveal .slides{text-align:left;}
+  .reveal section{font-size:30px;}
+  .reveal h1,.reveal h2,.reveal h3{color:#fff;text-transform:none;letter-spacing:-.01em;font-weight:700;}
+  .reveal h1{font-size:2.1em;line-height:1.05;}
+  .reveal h2{font-size:1.5em;margin-bottom:.3em;}
+  .reveal h3{font-size:1.05em;color:var(--mint);}
+  .reveal strong{color:#fff;}
+  .reveal em{color:var(--mint);font-style:normal;}
+  .reveal a{color:var(--mint);}
+  .mint{color:var(--mint);}
+  .red{color:var(--red);}
+  .amber{color:var(--amber);}
+  .mut{color:var(--mut);}
+  .center{text-align:center;}
+  .kicker{color:var(--mint);font-weight:700;letter-spacing:.18em;text-transform:uppercase;font-size:.5em;}
+  .reveal ul{margin-left:1em;}
+  .reveal li{margin:.28em 0;line-height:1.3;}
+  .reveal pre{box-shadow:none;width:100%;font-size:.46em;}
+  .reveal pre code{padding:18px;border-radius:10px;max-height:none;border:1px solid var(--line);background:#0a0e13;}
+  .reveal code{font-family:"SF Mono",Menlo,Consolas,monospace;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:start;}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;}
+  .card h3{margin-top:0;}
+  .pill{display:inline-block;background:rgba(0,237,100,.12);color:var(--mint);border:1px solid rgba(0,237,100,.35);
+        border-radius:999px;padding:3px 12px;font-size:.5em;font-weight:600;margin:3px 4px 3px 0;}
+  .pill.red{background:rgba(255,123,114,.12);color:var(--red);border-color:rgba(255,123,114,.35);}
+  .pill.amber{background:rgba(255,207,86,.12);color:var(--amber);border-color:rgba(255,207,86,.35);}
+  .big{font-size:1.6em;font-weight:800;color:#fff;line-height:1;}
+  .metric{text-align:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 10px;}
+  .metric .n{font-size:1.9em;font-weight:800;color:var(--mint);line-height:1;}
+  .metric .l{font-size:.5em;color:var(--mut);text-transform:uppercase;letter-spacing:.08em;margin-top:8px;}
+  .flow{font-family:"SF Mono",Menlo,monospace;font-size:.52em;line-height:1.7;color:var(--txt);
+        background:#0a0e13;border:1px solid var(--line);border-radius:12px;padding:20px 24px;}
+  .small{font-size:.62em;}
+  .xs{font-size:.5em;}
+  .tag{font-family:"SF Mono",Menlo,monospace;color:var(--mint);font-size:.9em;}
+  .reveal table{font-size:.56em;}
+  .reveal table th{color:var(--mint);border-bottom:1px solid var(--line);}
+  .reveal table td{border-bottom:1px solid rgba(31,42,54,.5);}
+  .foot{position:fixed;bottom:12px;right:20px;font-size:12px;color:var(--mut);}
+  .barbg{background:#1a2430;border-radius:6px;height:26px;position:relative;overflow:hidden;margin:6px 0;}
+  .barfill{position:absolute;top:0;left:0;height:100%;border-radius:6px;display:flex;align-items:center;padding-left:10px;font-size:.5em;color:#04150b;font-weight:700;}
+  hr{border:none;border-top:1px solid var(--line);margin:18px 0;}
+</style>
+</head>
+<body>
+<div class="reveal"><div class="slides">
+
+<!-- 1. TITLE -->
+<section data-background-color="#070a0e">
+  <div class="center">
+    <div class="kicker">MongoDB Hackathon · Oct 2026</div>
+    <h1 style="margin:.2em 0;">Airlock</h1>
+    <p style="font-size:1.1em;color:var(--txt);margin:0;">A self-improving harness for <em>untrusted</em> AI coding agents.</p>
+    <p class="mut" style="font-size:.7em;margin-top:1.2em;">
+      The agent ships the feature. <span class="mint">The harness learns to test it.</span>
+    </p>
+    <p class="mut" style="font-size:.55em;margin-top:2em;">Everything — state, evidence, artifacts, harness history — runs on MongoDB.</p>
+  </div>
+</section>
+
+<!-- 2. PROBLEM -->
+<section>
+  <div class="kicker">The problem</div>
+  <h2>AI agents write code that <span class="red">passes the test and breaks the data</span></h2>
+  <div class="grid2" style="margin-top:.4em;">
+    <div>
+      <ul>
+        <li>We let coding agents write and merge code faster than anyone can review it.</li>
+        <li>They optimize for <strong>the test passing</strong> — not for the behavior being correct.</li>
+        <li>A status-code test goes green while the <span class="red">database is quietly corrupted</span>.</li>
+        <li>When a bug escapes, nobody <em>strengthens the test suite</em> — so the same class of bug escapes again.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>The core idea</h3>
+      <p class="small">Treat the agent's output as <strong>untrusted</strong>:</p>
+      <p class="pill">freeze it</p><p class="pill">run it in isolation</p>
+      <p class="pill">judge it against invariants it can't weaken</p>
+      <p class="pill red">and when a bug escapes — evolve the test policy and prove the fix</p>
+    </div>
+  </div>
+</section>
+
+<!-- 3. TWO LOOPS -->
+<section>
+  <div class="kicker">What Airlock is</div>
+  <h2>Two loops around one source of truth</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>① Application loop</h3>
+      <p class="small">Ship the feature, safely.</p>
+      <div class="flow xs">plan → approve contract<br>→ delegate to isolated workers<br>→ <span class="mint">FREEZE</span> each output<br>→ validate vs trusted invariants<br>→ 3-way integrate + re-test<br>→ verified result</div>
+    </div>
+    <div class="card">
+      <h3>② Harness loop</h3>
+      <p class="small">Improve the <em>tester</em>, not just the code.</p>
+      <div class="flow xs">a bug escaped?<br>→ hypothesize a stricter harness<br>→ paired eval on <span class="mint">held-out</span> cases<br>→ promote only if it catches the bug<br>&nbsp;&nbsp;&nbsp;without failing legit work<br>→ else roll back</div>
+    </div>
+  </div>
+  <p class="center small mut" style="margin-top:.6em;">The thing that self-improves is the <span class="mint">test policy</span> — judged by an evaluator it cannot game.</p>
+</section>
+
+<!-- 4. ARCHITECTURE -->
+<section>
+  <div class="kicker">Architecture</div>
+  <h2>Control plane ↔ MongoDB ↔ Execution plane</h2>
+  <div class="flow" style="font-size:.46em;">
+<span class="mint">Claude Code</span> ──plugin/MCP/hooks──▶ <span class="mint">Control plane (API)</span>
+   plan · approve · delegate            FastAPI · job queue+scheduler · state machine
+        │                               planner (Agent SDK) · events/SSE · promote/rollback
+        ▼
+   ┌─────────────────────────── <span class="amber">MongoDB Atlas</span> ───────────────────────────┐
+   │  jobs · tasks · delegations · worker_runs · artifacts(GridFS)             │
+   │  validation_runs · integration_runs · harness_versions · evolution_runs  │
+   └──────────────────────────────────┬───────────────────────────────────────┘
+                                       ▼  (coupling = Atlas docs only, no shared code)
+                              <span class="mint">Execution plane</span>
+            worker launch+freeze · content-addressed artifacts · trusted runner
+            3-way serial integration · harness evolution + paired holdout eval
+  </div>
+  <p class="small mut" style="margin-top:.5em;">Two planes, <strong>zero shared code paths</strong> — they communicate only through documents on the <span class="tag">jobs</span> queue. The target app under test runs on its <strong>own separate Mongo</strong>.</p>
+</section>
+
+<!-- 5. MONGODB AS THE SPINE -->
+<section>
+  <div class="kicker">Why MongoDB</div>
+  <h2>Mongo isn't the datastore — it's the <span class="mint">coordination fabric</span></h2>
+  <div class="grid2">
+    <div>
+      <table>
+        <tr><th>MongoDB feature</th><th>What it powers in Airlock</th></tr>
+        <tr><td>Multi-doc <strong>transactions</strong></td><td>Every state change + event append is atomic</td></tr>
+        <tr><td><strong>Change streams</strong></td><td>SSE event doorbell; workers wake on new jobs</td></tr>
+        <tr><td><strong>GridFS</strong></td><td>Immutable content-addressed code artifacts</td></tr>
+        <tr><td><strong>Unique / partial indexes</strong></td><td>Idempotency (dedupe_key, cache_key, fences)</td></tr>
+        <tr><td><strong>$jsonSchema validators</strong></td><td>Strict schema on all 11 collections</td></tr>
+        <tr><td>Atomic <strong>$inc + CAS</strong></td><td>Leases, fencing, constraint epochs</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>11 collections, one source of truth</h3>
+      <p class="xs tag">projects · tasks · delegations · worker_runs · jobs · events · artifacts · validation_runs · integration_runs · harness_versions · evolution_runs</p>
+      <hr>
+      <p class="small">Separate clusters: <span class="mint">Airlock's own state on Atlas</span>, the <span class="mint">target app</span> on its own replica set. The harness tests code without ever trusting it near its own data.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 6. THE DEMO BUG -->
+<section>
+  <div class="kicker">The demo</div>
+  <h2>A half-line bug that passes the test</h2>
+  <p class="small">Delegated feature: <span class="tag">PATCH /api/v1/items/bulk</span> — atomic bulk update with idempotency.</p>
+  <div class="grid2">
+    <div>
+      <h3 class="red">The planted bug: partial write</h3>
+      <pre><code class="language-python" data-trim data-noescape>for u in body.updates:
+    item = db.items.find_one({"_id": u.id})
+    if item["owner_id"] != user:   # check too late
+        raise HTTPException(403)   # ...Alice already written
+    db.items.update_one(           # no transaction
+        {"_id": u.id}, {"$set": u.fields})</code></pre>
+      <p class="xs mut">A mixed-owner batch writes Alice's row, then hits Bob's and returns <span class="red">403</span> — but Alice's row is <strong>already corrupted</strong>.</p>
+    </div>
+    <div class="card">
+      <h3>Why status-only tests miss it</h3>
+      <ul class="small">
+        <li>Harness <strong>v1</strong> checks: did it return the right HTTP code? <span class="mint">✓ 403</span></li>
+        <li>It <strong>never looks at the database</strong> before vs. after.</li>
+        <li>Test is green. Data is wrong. The bug escapes.</li>
+      </ul>
+      <hr>
+      <p class="small">An independent probe — a <strong>mixed-owner batch + a before/after DB snapshot</strong> — is what actually catches it.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 7. EVOLUTION -->
+<section>
+  <div class="kicker">The payoff</div>
+  <h2>The harness evolves: v1 → v2</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>v1 — status only</h3>
+      <pre><code class="language-python" data-trim>inspections = ["http_responses"]
+required_tags = ["happy_path"]</code></pre>
+      <p class="xs red">Faulty app → PASS (bug escapes)</p>
+    </div>
+    <div class="card">
+      <h3 class="mint">v2 — + database invariants</h3>
+      <pre><code class="language-python" data-trim>inspections = ["http_responses",
+  "rows_unchanged_on_rejection",   # NEW
+  "idempotency_semantics"]         # NEW
+required_tags = ["happy_path",
+  "owner_boundary", "idempotency"] # NEW</code></pre>
+      <p class="xs mint">Faulty app → REPAIR_REQUIRED (bug caught)</p>
+    </div>
+  </div>
+  <p class="small" style="margin-top:.5em;"><strong>Hypothesis</strong> (logged, deterministic — not hand-edited): <em>"Mixed-owner batches plus a before/after database invariant catch the partial write that a status-only harness lets through."</em></p>
+</section>
+
+<!-- 8. PROMOTION GATE -->
+<section>
+  <div class="kicker">Proof, not vibes</div>
+  <h2>Promoted only on <span class="mint">held-out evidence</span></h2>
+  <div class="grid2">
+    <div>
+      <p class="small">Candidate v2 runs a <strong>paired evaluation</strong> against baseline v1 — same frozen apps, <strong>3 fresh seeds each</strong> (fresh canary salts, so it can't memorize).</p>
+      <p class="small">An <strong>independent evaluator</strong> decides eligibility. The evolver only proposes within a fixed ceiling — it <strong>never promotes itself</strong>, and never supplies the holdout labels.</p>
+      <div class="card" style="margin-top:.4em;">
+        <p class="xs mint">Promote iff ALL four hold:</p>
+        <ul class="xs">
+          <li>escaped failures <strong>strictly decrease</strong></li>
+          <li>legitimate work still passes (<strong>0 false blocks</strong>)</li>
+          <li>clean app never regresses</li>
+          <li>overhead ≤ 3× baseline</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <p class="small mut">Escaped failures on the faulty app (3 seeds):</p>
+      <div class="barbg"><div class="barfill red" style="width:100%;background:var(--red);">v1 baseline — 3 escaped</div></div>
+      <div class="barbg"><div class="barfill" style="width:4%;background:var(--mint);min-width:34px;">0</div></div>
+      <p class="xs mint" style="margin-top:-2px;">v2 candidate — 0 escaped</p>
+      <div class="grid3" style="margin-top:1em;">
+        <div class="metric"><div class="n">3→0</div><div class="l">escapes</div></div>
+        <div class="metric"><div class="n">0</div><div class="l">false blocks</div></div>
+        <div class="metric"><div class="n">✓</div><div class="l">promoted</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 9. END TO END -->
+<section>
+  <div class="kicker">End to end</div>
+  <h2>One request, proven the whole way down</h2>
+  <div class="flow" style="font-size:.5em;">
+you type a request in <span class="mint">Claude Code</span>
+  → <span class="mint">plan</span> (LLM planner, Agent SDK) → operator <span class="mint">approves</span> the contract digest
+  → <span class="mint">delegate</span> assignments → isolated workers write code
+  → <span class="amber">FREEZE</span> each output (after the process tree is stopped)
+  → <span class="amber">VALIDATE</span> in a sandbox vs trusted invariants  <span class="red">← faulty caught under v2</span>
+  → <span class="mint">repair</span> → 3-way <span class="mint">integrate</span> + re-test → <span class="mint">completed</span>
+        └─ a failure escaped?  → <span class="amber">propose</span> stricter harness
+                               → <span class="amber">paired holdout eval</span>
+                               → <span class="mint">promote</span> (3→0) → repaired code passes
+  </div>
+  <p class="center small mut" style="margin-top:.5em;">Proven live on Atlas through the real HTTP API — plan → approve → delegate → validate → repair → integrate → evolve → promote.</p>
+</section>
+
+<!-- 10. ENGINEERING -->
+<section>
+  <div class="kicker">Under the hood</div>
+  <h2>The hard parts we actually built</h2>
+  <div class="grid3">
+    <div class="card"><h3>Freeze-after-stop</h3><p class="xs">Worker output is captured only after the whole process tree is killed. <span class="mint">finished ≠ accepted.</span></p></div>
+    <div class="card"><h3>Content-addressed artifacts</h3><p class="xs">Deterministic tarballs (mtime=0) → tree hash → GridFS with read-back verify. Same input, same ID.</p></div>
+    <div class="card"><h3>Fail-closed validation</h3><p class="xs">Any observer hiccup ⇒ <span class="amber">inconclusive</span>, never PASS. Verdicts cached by exact-input key.</p></div>
+    <div class="card"><h3>3-way serial integration</h3><p class="xs"><span class="tag">git merge-file</span> per file, fenced single-writer — at-least-once delivery can't duplicate or clobber.</p></div>
+    <div class="card"><h3>CAS + fencing + epochs</h3><p class="xs">Leases, revision CAS, integration fences, constraint epochs — stale work is rejected, not applied.</p></div>
+    <div class="card"><h3>Trusted inspectors</h3><p class="xs">Judgment lives in the controller, never in candidate code. Credentials redacted to canary hashes.</p></div>
+  </div>
+</section>
+
+<!-- 11. PLUGIN / UX -->
+<section>
+  <div class="kicker">The front door</div>
+  <h2>It drives from inside Claude Code</h2>
+  <div class="grid2">
+    <div>
+      <ul class="small">
+        <li><strong>Plugin + MCP bridge</strong>: <span class="tag">airlock_plan / status / delegate</span> as native tools.</li>
+        <li><strong>PreToolUse hook</strong>: while a task runs, blocks writes to the registered repo and ad-hoc subagents — the managed workers are the only writers.</li>
+        <li><strong>Stop hook</strong>: won't let the session quit mid-task.</li>
+        <li><strong>Live dashboard</strong>: validation verdicts, evolution hypothesis, and the <em>actual before/after row</em> that proves the catch.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <p class="xs mut">dashboard · <span class="tag">:8099</span></p>
+      <pre><code class="xs" data-trim>Airlock · proj_bulk
+active harness v2 · gen 2 · epoch 1
+
+✗ rows_unchanged_on_rejection
+  rejected batch left 1 row changed
+
+⚠ partial write — item alice_1
+  before = {"title":"Alice A"}
+  after  = {"title":"PWNED"}
+
+evolution: eligible  v1 → v2
+baseline escaped 3 → candidate 0</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- 12. BY THE NUMBERS -->
+<section>
+  <div class="kicker">By the numbers</div>
+  <h2>What we built during the event</h2>
+  <div class="grid3" style="margin-bottom:.4em;">
+    <div class="metric"><div class="n">~8.5k</div><div class="l">lines of Python</div></div>
+    <div class="metric"><div class="n">11</div><div class="l">Mongo collections</div></div>
+    <div class="metric"><div class="n">2</div><div class="l">planes, 0 shared code</div></div>
+  </div>
+  <div class="grid3">
+    <div class="metric"><div class="n">5</div><div class="l">job kinds end-to-end</div></div>
+    <div class="metric"><div class="n">3→0</div><div class="l">bugs after evolution</div></div>
+    <div class="metric"><div class="n">17</div><div class="l">unit tests green</div></div>
+  </div>
+  <p class="small mut center" style="margin-top:.8em;">Control API · scheduler · state machine · planner · execution sandbox · harness evolution · target app · Claude Code plugin + MCP + hooks · live dashboard.</p>
+</section>
+
+<!-- 13. CLOSE -->
+<section data-background-color="#070a0e">
+  <div class="center">
+    <div class="kicker">Airlock</div>
+    <h1 style="font-size:1.8em;margin:.2em 0;">Agents you don't have to trust.<br><span class="mint">A test suite that learns.</span></h1>
+    <p class="small mut" style="margin-top:1em;">Freeze it · isolate it · judge it on invariants it can't weaken · evolve the judge on held-out proof.</p>
+    <p class="mut" style="font-size:.55em;margin-top:2em;">Built on MongoDB — transactions, change streams, GridFS, atomic fencing.<br>Thank you.</p>
+  </div>
+</section>
+
+</div></div>
+<div class="foot">Airlock · MongoDB Hackathon 2026</div>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5/plugin/highlight/highlight.js"></script>
+<script>
+Reveal.initialize({hash:true,slideNumber:'c/t',transition:'fade',width:1280,height:760,margin:0.04,
+  plugins:[RevealHighlight]});
+</script>
+</body>
+</html>
