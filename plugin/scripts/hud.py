@@ -113,7 +113,7 @@ def stats(d: dict[str, Any]) -> list[str]:
     p, j, h, today = d["progress"], d["jobs"], d["harness"], d["today"]
     lines = [f"{head} · {task['id']} · {task['request']}"]
     if d["reason"] == "approve":
-        lines.append(f"approve: ! airlock approve {task['id']}")
+        lines.append(f"approve: ! airlock -y approve {task['id']}")
     else:
         busy = [f"{p[k]} {k.replace('_required', '')}" for k in ("integrating", "validating", "running", "repair_required") if p.get(k)]
         extra = [f"ready: {', '.join(p['ready'])}"] * bool(p["ready"]) + [f"{k} try {n}/2" for k, n in p["retries"].items()]

@@ -62,6 +62,14 @@ async def test_hud_needs_hook_token_and_is_idle_without_a_task(client: httpx.Asy
 
 
 @pytest.mark.anyio
+async def test_hud_follows_newest_task_only_when_enabled(client: httpx.AsyncClient, db: AsyncDatabase[Doc], monkeypatch: pytest.MonkeyPatch) -> None:
+    await session_task(client, db, TaskState.PLANNED)
+    assert (await hud(client, "sess_viewer"))["task"] is None
+    monkeypatch.setenv("AIRLOCK_HUD_FOLLOW_LATEST", "1")
+    assert (await hud(client, "sess_viewer"))["reason"] == "approve"
+
+
+@pytest.mark.anyio
 async def test_hud_moods_follow_task_and_delegation_state(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
     sid, _ = await session_task(client, db, TaskState.PLANNED)
     assert (await hud(client, sid))["mood"] == "waiting" and (await hud(client, sid))["reason"] == "approve"

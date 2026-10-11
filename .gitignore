@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude Code local state (project settings.json is shared)
+.claude/settings.local.json
+.claude/worktrees/

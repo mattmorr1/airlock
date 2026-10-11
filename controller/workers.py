@@ -23,9 +23,12 @@ Backends:
 """
 from __future__ import annotations
 
+import asyncio
+import os
+from collections.abc import Callable
 from pathlib import Path
 from tempfile import mkdtemp
-from typing import Callable, Protocol
+from typing import Protocol
 
 from common.config import get_settings
 from common.db import col
@@ -62,6 +65,11 @@ class ScriptedWorker:
         return None
 
 
+def _relative(path: str, root: Path) -> str:
+    """Checkout-relative, normalized path; anything escaping the checkout keeps a leading '..' and so matches no scope."""
+    return os.path.normpath(os.path.relpath(path, root) if os.path.isabs(path) else path)
+
+
 class ClaudeSDKWorker:
     """Real managed worker: a bounded Claude Agent SDK session in a container."""
 
@@ -69,36 +77,38 @@ class ClaudeSDKWorker:
         self._session = None
 
     def run(self, checkout_dir: Path, payload: dict) -> dict:
-        try:
-            from claude_agent_sdk import ClaudeAgentOptions, query  # type: ignore
-        except ImportError as exc:  # pragma: no cover - depends on optional dep
-            raise NotImplementedError(
-                "ClaudeSDKWorker needs claude-agent-sdk, the bounded worker image, "
-                "and a short-lived inference-gateway credential. Use ScriptedWorker "
-                "for offline development."
-            ) from exc
+        """Runs off the event loop (asyncio.to_thread), so it owns a fresh loop for the SDK's async stream."""
+        return asyncio.run(self._run(checkout_dir, payload))
 
-        settings = get_settings()
-        # Tool inventory and permission preapproval are separate concerns: we do
-        # NOT rely on allowed_tools to gate — per-call policy is enforced by the
-        # controller-owned PreToolUse hook (spec section 5).
+    async def _run(self, checkout_dir: Path, payload: dict) -> dict:
+        from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, ResultMessage, query
+
+        from controller.planner import scope_matches
+
+        scope = payload.get("file_scope", [])
+
+        async def scope_gate(inp, _tool_use_id, _ctx) -> dict:
+            # Feedback, not the boundary: Bash can still write anywhere, which freeze-time scope checks and the container bound.
+            rel = _relative(inp["tool_input"].get("file_path") or inp["tool_input"].get("notebook_path") or "", checkout_dir)
+            if scope_matches(scope, rel):
+                return {}
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                           "permissionDecisionReason": f"{rel} is outside this assignment's file scope {scope}"}}
+
         options = ClaudeAgentOptions(
             cwd=str(checkout_dir),
-            model=payload.get("model_requested", settings.worker_default_model),
+            model=payload.get("model_requested", get_settings().worker_default_model),
             max_turns=payload.get("max_turns", 20),
             allowed_tools=["Read", "Edit", "Write", "Bash"],
-            hooks={"PreToolUse": [self._pre_tool_use]},
+            hooks={"PreToolUse": [HookMatcher(matcher="Edit|Write|NotebookEdit", hooks=[scope_gate])]},
         )
-        session_id = None
-        for message in query(prompt=self._build_prompt(payload), options=options):
-            session_id = getattr(message, "session_id", session_id)
-        return {"mode": "managed", "claude_session_id": session_id}
-
-    def _pre_tool_use(self, payload, tool_use_id, context):  # pragma: no cover
-        # Per-call policy decision point. Enforce file-scope and deny egress /
-        # publication tools here; file-path hooks are feedback, not a boundary
-        # if Bash can write arbitrary paths — so the container bounds Bash.
-        return {}
+        result = None
+        async for message in query(prompt=self._build_prompt(payload), options=options):
+            if isinstance(message, ResultMessage):
+                result = message
+        if result is None or result.is_error:
+            raise RuntimeError(f"SDK worker ended without success: {result.subtype if result else 'no result message'}")
+        return {"mode": "claude-sdk", "claude_session_id": result.session_id, "num_turns": result.num_turns, "total_cost_usd": result.total_cost_usd}
 
     def _build_prompt(self, payload: dict) -> str:
         scope = ", ".join(payload.get("file_scope", []))

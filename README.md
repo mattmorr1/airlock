@@ -1,100 +1,139 @@
-# Airlock — a self-improving agent harness
+# Airlock: a self-improving harness for AI coding agents
 
-Airlock is a controller for delegated AI coding work. It treats coding agents as
-**untrusted**: it freezes their output, runs it in isolation against independent
-checks they can't weaken, composes sibling work without silent overwrites — and
-it **improves its own testing harness** whenever a failure escapes, proving the
-improvement on held-out evidence before adopting it.
+Airlock runs delegated AI coding work as **untrusted** work. It freezes each
+agent's output, tests it in isolation against checks the agent can't weaken,
+merges sibling work without silent overwrites, and **improves its own test
+harness** whenever a bug slips through. A new harness is adopted only after an
+independent evaluator shows it on held-out cases.
 
 > The agent ships the feature; the harness learns to test it.
 
-Built for the Oct 2026 MongoDB hackathon. Everything runs on **MongoDB** —
-Airlock's own state, evidence, harness versions, and promotion history on an
-Atlas cluster, and the target app under test on its own separate Mongo.
+Built for the Oct 2026 MongoDB hackathon. All state lives in **MongoDB**:
+Airlock's tasks, jobs, evidence, artifacts, and harness history are on Atlas,
+and the app under test runs on its own separate Mongo.
 
-## The idea in one picture
+## The 20-second version
 
+We ask agents for `PATCH /api/v1/items/bulk`, an atomic bulk update with
+idempotency. The naive implementation updates Alice's item, reaches Bob's item,
+returns `403`, and **leaves Alice's row already changed**. A status-code test
+passes, but the database is corrupted.
+
+| | Harness v1 (status codes) | Harness v2 (evolved) |
+|---|---|---|
+| Faulty code | **passes**: the bug escapes | **caught**: `rows_unchanged_on_rejection` fails, with before/after evidence |
+| Repaired code | passes | passes |
+| Escaped failures on the comparison set | 3 | **0**, with 0 legitimate runs blocked |
+
+v2 wasn't written by hand. Airlock proposed it from the escape, checked it
+against v1 on held-out cases, and promoted it only because it caught the bug
+**without blocking correct work**.
+
+## What you'll see
+
+- **Claude Code front door.** `/airlock:run` plans the task. You approve the
+  contract with `! airlock -y approve <task>`, and Airlock delegates the work
+  while hooks keep the parent session from editing the repo underneath it.
+- **Hatch, the statusline astronaut.** It reads real task state from
+  `/v1/hud`: *thinking* while planning, *waiting on you* at approval, *alarm*
+  when validation catches a bug, *success* when the work merges.
+- **A live dashboard** (`:8099`), pushed by **MongoDB change streams**. Each
+  attempt shows its frozen artifact, whether a scripted fixture or Claude wrote
+  it, every check, the red before/after diff of the partial write, the repair,
+  the integration, harness evolution (escaped 3 → 0), and the event stream.
+
+Step-by-step demo with timings: **[DEMO.md](DEMO.md)**.
+
+## Quickstart
+
+Needs Python 3.13 + [uv](https://docs.astral.sh/uv/), an Atlas cluster, and a
+local `mongod` for the target app (`brew tap mongodb/brew && brew install mongodb-community`).
+
+```bash
+cp .env.example .env              # set AIRLOCK_MONGO_URI (+ AIRLOCK_DB)
+uv sync
+uv run --env-file .env pytest -q  # 196 tests; DB tests use throwaway airlock_test_* databases
+scripts/up.sh                     # target mongod, API :8000, job worker, dashboard :8099
+uv run --env-file .env python scripts/run_via_api.py   # second terminal: plan → approve → delegate → caught → repaired → merged
 ```
-you type a request in Claude Code
-  → plan (LLM)  → operator approves the contract
-  → delegate assignments → isolated workers write code
-  → FREEZE each output → TEST it in a sandbox against trusted invariants
-  → compose + re-test → verified result
-        └─ a failure escaped?  → propose a stricter harness
-                               → paired evaluation on held-out cases
-                               → promote only if it catches the bug
-                                 without failing legitimate work
-```
 
-Two loops: the **application loop** (code → freeze → validate → repair →
-integrate) and the **harness loop** (escape → hypothesis → candidate harness →
-paired evaluation → promote/rollback). The thing that self-improves is the
-**test policy**, judged by an **independent evaluator it cannot game**.
+`scripts/up.sh --real` swaps in the real Claude planner and real Claude Agent
+SDK coding workers.
 
-## The demo
+## What's real and what's scripted
 
-Target: a MongoDB items app where users own items. Feature delegated to Airlock:
-`PATCH /api/v1/items/bulk` — atomic bulk update with idempotency.
+We use stand-ins only where an LLM would make the demo nondeterministic. Each
+one is labeled where it runs.
 
-The planted bug is a **partial write**: a naive implementation updates Alice's
-item, then hits Bob's item and returns `403` — but Alice's row is already
-changed. A status-only test passes; the database is corrupted. Harness **v1**
-(success + status codes) misses it. An independent probe (a mixed-owner batch +
-a before/after DB snapshot) finds it. Airlock evolves to **v2** — adds the
-mixed-owner scenario and the `rows_unchanged_on_rejection` invariant — proves it
-on fresh cases, promotes it, and the repaired code passes.
+| Piece | Default demo (`up.sh`) | `up.sh --real` |
+|---|---|---|
+| Control API, job queue, leases, fencing, state machine, events | real | real |
+| Freeze, content-addressed artifacts, scope check | real | real |
+| Trusted runner: boots the app, runs scenarios, before/after DB inspection | real | real |
+| Serial 3-way integration + final validation | real | real |
+| Harness evolution + paired holdout evaluation + promotion | real | real |
+| Planner | **stub**: fixed 1-assignment contract | Claude (Agent SDK), validated scope grammar + inferred edges |
+| Coding worker | **scripted fixture**: attempt 1 faulty, repair fixed. The dashboard tags it `scripted stand-in` | Claude Agent SDK session with a scope-enforcing PreToolUse hook. Tagged `claude-sdk · turns · $cost` |
+
+Why the default is scripted: a real coder may write correct code on the first
+try, so "the bug gets caught" isn't guaranteed live. The real planner splits
+this feature into about 4 dependent assignments. In `--real`, multi-assignment
+serial integration is less rehearsed than the single-assignment path. Worker
+isolation is the dev-only `local` mode; container isolation is designed in the
+spec but not shipped.
+
+## MongoDB features doing real work
+
+| Feature | Used for | Where |
+|---|---|---|
+| Multi-document transactions | Every state transition, job completion, and event append commit together or not at all | `controller/scheduler.py`, `controller/states.py` |
+| CAS on `revision` + lease fences | Stale workers can't complete; duplicate delivery can't double-apply | `controller/states.py`, `controller/scheduler.py` |
+| Change streams | SSE doorbell for task/project events; the live dashboard | `controller/events.py`, `ui/server.py` |
+| GridFS | Immutable, content-addressed artifacts (baselines, frozen worker output, merged trees) | `controller/artifacts.py` |
+| JSON Schema validators + unique/partial indexes | Enum-checked states, dedupe keys, gapless per-stream event sequences, idempotent command receipts | `mongo/setup.py`, `api/idempotency.py` |
+| Aggregation | HUD "today" totals, dashboard queue counts | `api/hooks.py`, `ui/server.py` |
+| Atlas as the shared record | Provenance and harness history shared across teammates' machines | everything above |
 
 ## Architecture
 
-- **Control plane (Person A):** FastAPI control API, durable job queue +
-  scheduler, coarse state machine with CAS + fencing, LLM planner, events/SSE,
-  promotion/rollback, and the **Claude Code plugin + MCP bridge + hooks** that
-  drive it from the editor. (`api/`, `controller/{db,states,scheduler,planner,policies,events}.py`,
-  `mongo/`, `cli/`, `plugin/`, `bridge/`.)
-- **Execution plane (Person B):** the sandbox + trusted judge — bounded worker
-  launch, freeze/manifest/digest into content-addressed artifacts, a trusted
-  runner with effect inspectors, serial 3-way integration, and harness
-  evolution with paired holdout evaluation. (`controller/{handlers,workers,snapshots,artifacts,integration,harness,validation}.py`,
-  `runner/`, `evolution/`, `trusted-evals/`, `common/`.) See [PERSON_B.md](PERSON_B.md).
-- **Target app:** [`target-app/`](target-app/README.md) — purpose-built FastAPI +
-  MongoDB app (users + items with `owner_id`). The bulk feature variants live in
-  `demo/bulk_feature/{faulty,fixed}/`.
-
-Design spec: [airlock-evolve-architecture.md](airlock-evolve-architecture.md).
-Glossary: [CONTEXT.md](CONTEXT.md). Decisions: [docs/adr/](docs/adr/).
-
-## Quickstart (local)
-
-Requires a MongoDB Atlas cluster (set `AIRLOCK_MONGO_URI`) and a local Mongo
-replica set for the target app.
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt        # or: uv sync
-
-# fast unit + runner tests (no cloud needed):
-python -m pytest tests/ -q
-
-# end-to-end through the real control-plane API (bootstrap + plan→approve→delegate):
-export AIRLOCK_MONGO_URI='<atlas srv uri>' AIRLOCK_DB=airlock_plugin
-export TARGET_MONGO_URI='mongodb://127.0.0.1:27018/?replicaSet=rs0'
-export AIRLOCK_EXECUTION_MODE=local
-export AIRLOCK_TOKEN_OPERATOR=op-secret AIRLOCK_TOKEN_BRIDGE=bridge-secret AIRLOCK_TOKEN_HOOK=hook-secret
-export AIRLOCK_STUB_PLAN=1 AIRLOCK_DEV_FIXTURE=auto
-mongod --dbpath /tmp/airlock-mongo/db --port 27018 --replSet rs0 --bind_ip 127.0.0.1 &
-python -m uvicorn api.main:app --port 8000 &
-python -m controller.worker_main &
-python -m uvicorn ui.server:app --port 8099 &     # dashboard at http://127.0.0.1:8099
-python scripts/run_via_api.py
+```
+Claude Code ──/airlock:run──▶ MCP bridge ──▶ Control API ──▶ jobs (Mongo, leased + fenced)
+   ▲  hooks gate edits/Stop                      │                 │
+   └── Hatch HUD ◀── /v1/hud                     ▼                 ▼
+                                   plan → approve → delegate    job worker: launch → freeze → validate
+                                                                  → repair? → integrate → final validate
+                                   escape ─▶ evolve: propose stricter harness → paired holdout eval → promote
+dashboard ◀── change streams ── Atlas (tasks, delegations, worker_runs, validation_runs, artifacts, harness_versions, events)
 ```
 
-To drive it from Claude Code with the plugin, and to resume a session, see
-[SESSION_LOG.md](SESSION_LOG.md).
+- **Control plane:** FastAPI API, durable job queue + scheduler, CAS state
+  machine, LLM planner, events/SSE, promotion/rollback/revoke, and the Claude
+  Code plugin + MCP bridge + hooks. (`api/`, `controller/{db,states,scheduler,planner,policies,events}.py`,
+  `mongo/`, `cli/`, `plugin/`, `bridge/`)
+- **Execution plane:** worker launch, freeze/manifest/digest, trusted runner
+  with effect inspectors, serial 3-way integration, harness evolution with
+  paired holdout evaluation. (`controller/{handlers,workers,snapshots,artifacts,integration,harness,validation}.py`,
+  `runner/`, `evolution/`, `trusted-evals/`) See [PERSON_B.md](PERSON_B.md).
+- **Target app:** [`target-app/`](target-app/README.md), a FastAPI + MongoDB
+  items app. The feature variants are in `demo/bulk_feature/{faulty,fixed}/`.
 
-## What the team built during the event
+### Safety properties
 
-The Airlock controller, its contracts and collection layouts, the execution
-plane, the harness-evolution mechanism, the target app and bulk feature, the
-plugin/MCP/hooks, and the dashboard. The platform capabilities it stands on
-(Claude Code hooks/subagents, the Claude Agent SDK, MongoDB transactions/change
-streams/GridFS, Docker) are external and referenced in the design spec.
+- *Finished* ≠ *accepted*: a delegation counts only after it's integrated and validated.
+- Observer or capture failure → `inconclusive`, never `pass`.
+- `airlock revoke` bumps the constraint epoch. Approvals and in-flight results
+  from the old epoch are void.
+- The evolver proposes; an independent evaluator decides eligibility. Promotion
+  is a conditional pointer flip, and `airlock rollback` restores any previously
+  validated version.
+
+Spec: [airlock-evolve-architecture.md](airlock-evolve-architecture.md) ·
+Glossary: [CONTEXT.md](CONTEXT.md) · Decisions: [docs/adr/](docs/adr/)
+
+## Built during the event
+
+All code in this repo: the controller, contracts and collection layouts,
+execution plane, harness evolution, target app and bulk feature,
+plugin/MCP/hooks, HUD, and dashboard. External platforms we build on: Claude
+Code (hooks, plugins, statusline), the Claude Agent SDK, and MongoDB Atlas
+(transactions, change streams, GridFS).

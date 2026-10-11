@@ -36,7 +36,6 @@ from controller.states import (
     IntegrationRunState,
     JobKind,
     Prefix,
-    TaskState,
     ValidationDecision,
     WorkerRunState,
     append_event,
@@ -67,14 +66,16 @@ def _launch_sync(wr: Doc, dele: Doc) -> Doc:
     fixture = wr.get("dev_fixture") or dele.get("dev_fixture") or os.environ.get("AIRLOCK_DEV_FIXTURE")
     if fixture == "auto":  # repair demo: first attempt is faulty, the repair attempt is fixed
         fixture = "bulk_faulty" if wr.get("attempt", 1) == 1 else "bulk_fixed"
-    if fixture:  # dev/demo convenience: a scripted edit stands in for the SDK agent
+    if fixture:  # dev/demo convenience: a scripted edit stands in for the SDK agent, and says so in metrics.mode
         FIXTURES[fixture](checkout, {})
+        metrics = {"mode": "scripted", "fixture": fixture}
     else:
-        ClaudeSDKWorker().run(checkout, {"objective": dele.get("objective", ""), "file_scope": dele.get("file_scope", [])})
-    return snapshots.freeze_worker_output(
+        metrics = ClaudeSDKWorker().run(checkout, {"objective": dele.get("objective", ""), "file_scope": dele.get("file_scope", [])})
+    frozen = snapshots.freeze_worker_output(
         checkout_dir=checkout, base_tree=base_tree, project_id=wr["project_id"], task_id=wr["task_id"],
         worker_run_id=wr["_id"], base_artifact_id=wr["input_artifact_id"],
         allowed_scope=dele.get("file_scope", []), created_by="supervisor_01")
+    return {**frozen, "metrics": metrics}
 
 
 async def handle_launch(db: AsyncDatabase[Doc], job: Doc) -> None:
@@ -93,11 +94,13 @@ async def handle_launch(db: AsyncDatabase[Doc], job: Doc) -> None:
     async def apply(s) -> None:
         await _walk(s, db["worker_runs"], wr["_id"], wr["revision"],
                     [WorkerRunState.STARTING, WorkerRunState.RUNNING, WorkerRunState.SNAPSHOTTING, WorkerRunState.FINISHED],
-                    final_set={"output_artifact_id": art_id, "finished_at": datetime.now(UTC)})
+                    final_set={"output_artifact_id": art_id, "metrics": frozen["metrics"],
+                              "finished_at": datetime.now(UTC)})
         await transition(s, db["delegations"], dele["_id"], dele["revision"], DelegationState.VALIDATING)
         jid = await enqueue(s, db, JobKind.VALIDATE, vp, f"{wr['_id']}:validate", wr["project_id"], wr["task_id"])
         await append_event(s, wr["task_id"], db["tasks"], "worker.finished", "supervisor",
-                           {"worker_run_id": wr["_id"], "artifact_id": art_id, "scope_violations": frozen["scope_violations"], "validate_job": jid})
+                           {"worker_run_id": wr["_id"], "artifact_id": art_id, "mode": frozen["metrics"]["mode"],
+                            "scope_violations": frozen["scope_violations"], "validate_job": jid})
 
     await complete(db, job["_id"], owner, fence, apply, result_ref=art_id)
 

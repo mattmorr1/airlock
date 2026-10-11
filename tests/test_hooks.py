@@ -93,7 +93,7 @@ async def test_unconfigured_root_denies_writes(client: httpx.AsyncClient, db: As
 async def test_planned_task_is_not_gated_and_stop_waits_for_operator(client: httpx.AsyncClient, db: AsyncDatabase[Doc], tmp_path: Path) -> None:
     sid, tid = await session_task(client, db, TaskState.PLANNED)
     assert await pre(client, sid, "Edit", file_path=str(tmp_path / "a.py")) == {"active": False}
-    assert await stop(client, sid) == {"active": False, "systemMessage": f"Airlock task {tid} awaiting operator: ! airlock approve {tid}"}
+    assert await stop(client, sid) == {"active": False, "systemMessage": f"Airlock task {tid} awaiting operator: ! airlock -y approve {tid}"}
 
 
 async def test_stop_allows_terminal_tasks(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:

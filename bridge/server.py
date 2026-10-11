@@ -23,7 +23,7 @@ async def call(method: str, path: str, **kw: Any) -> dict[str, Any]:
 
 @mcp.tool()
 async def airlock_plan(project_id: str, parent_session_id: str, request: str, base_artifact_id: str) -> dict[str, Any]:
-    """Create a draft Airlock task; the controller plans it and the operator approves with `! airlock approve <task_id>`."""
+    """Create a draft Airlock task; the controller plans it and the operator approves with `! airlock -y approve <task_id>`."""
     return await call("POST", "/v1/tasks", json={"project_id": project_id, "parent_session_id": parent_session_id, "request": request,
                                                  "base_artifact_id": base_artifact_id})
 

@@ -29,8 +29,8 @@ from controller import artifacts, harness, snapshots
 from evolution.propose import propose_config
 
 API = os.environ.get("AIRLOCK_URL", "http://127.0.0.1:8000")
-BRIDGE = {"Authorization": f"Bearer {os.environ.get('AIRLOCK_TOKEN_BRIDGE', '')}"}
-OP = {"Authorization": f"Bearer {os.environ.get('AIRLOCK_TOKEN_OPERATOR', '')}"}
+BRIDGE = {"Authorization": f"Bearer {os.environ.get('AIRLOCK_TOKEN_BRIDGE', 'bridge-secret')}"}
+OP = {"Authorization": f"Bearer {os.environ.get('AIRLOCK_TOKEN_OPERATOR', 'op-secret')}"}
 
 
 def bootstrap() -> tuple[str, str]:

@@ -90,7 +90,7 @@ async def lifecycle(body: HookInput, db: DB, _: Hook) -> Doc:
         return {"active": False}
     tid, status = task["_id"], task["status"]
     if status == TaskState.PLANNED:
-        return {"active": False, "systemMessage": f"Airlock task {tid} awaiting operator: ! airlock approve {tid}"}
+        return {"active": False, "systemMessage": f"Airlock task {tid} awaiting operator: ! airlock -y approve {tid}"}
     if status == TaskState.DRAFT:
         return {"active": False, "systemMessage": f"Airlock task {tid} is still being planned; check back with airlock_status({tid!r}, 50)"}
     delegations = await db["delegations"].find({"task_id": tid}, {"assignment_key": 1, "status": 1}).to_list()
@@ -123,7 +123,11 @@ def mood(task: Doc | None, delegations: list[Doc], expired: int) -> tuple[str, s
 async def hud(session_id: Name, db: DB, _: Hook) -> Doc:
     """Compact status for the statusline sprite: the session's latest task, merge progress, queue, harness, and today's project totals."""
     now = datetime.now(UTC)
-    task = await db["tasks"].find_one({"parent_session_id": session_id}, sort=[("created_at", -1)])
+    newest = [("created_at", -1)]
+    task = await db["tasks"].find_one({"parent_session_id": session_id}, sort=newest)
+    # AIRLOCK_HUD_FOLLOW_LATEST: sessions with no task of their own follow the DB's newest task (demo driven from another process).
+    if task is None and os.environ.get("AIRLOCK_HUD_FOLLOW_LATEST"):
+        task = await db["tasks"].find_one({}, sort=newest)
     if task is None:
         return {"mood": "content", "reason": "idle", "task": None}
     tid = task["_id"]
