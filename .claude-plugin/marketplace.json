@@ -1,0 +1,12 @@
+{
+  "name": "mongohack",
+  "description": "Local marketplace for the Airlock plugin",
+  "owner": {"name": "mongohack"},
+  "plugins": [
+    {
+      "name": "airlock",
+      "source": "./plugin",
+      "description": "Airlock control plane: plan a task, delegate approved assignments to isolated workers, and gate the parent session while it runs"
+    }
+  ]
+}
