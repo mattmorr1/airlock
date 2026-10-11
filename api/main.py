@@ -135,3 +135,7 @@ async def get_job(job_id: str, db: DB, _: Annotated[Role, Depends(require(Cap.RE
 from api.delegations import router as delegations  # noqa: E402  (circular: it imports DB, Key, find from here)
 
 app.include_router(delegations)
+
+from api import policies  # noqa: E402  # imported last: it imports DB, Key, find from this module
+
+app.include_router(policies.router)
