@@ -51,7 +51,7 @@ MUTED = (160, 171, 184)
 VOID = (17, 19, 30)  # backdrop tile behind Hatch
 FACE = {"content": "(^_^)", "watching": "(o_o)", "waiting": "(-_-)", "alarm": "(O_O)!", "unwell": "(x_x)"}
 DRIFT = [0, 0, 1, 2, 2, 1, 0, 0, 0, 1]  # columns, one step per 6s: a slow wander that never jumps
-DRIFT_MAX, UP = max(DRIFT), "\u2580"
+DRIFT_MAX, DN = max(DRIFT), "\u2584"
 BLANK = "\u2800"  # braille blank: Claude Code strips leading spaces per statusline row, which would shear the sprite
 WORD = {("content", "idle"): "airlock idle", ("content", "done"): "task done", ("watching", "merging"): "merging", ("watching", "planning"): "planning",
         ("waiting", "approve"): "waiting on you", ("waiting", "delegate"): "ready to delegate", ("alarm", "repair"): "needs repair",
@@ -83,10 +83,12 @@ def bg(rgb: tuple[int, int, int]) -> str:
 
 
 def halfblocks(grid: list[str], shift: int) -> list[str]:
-    """Hatch on a dark tile he drifts inside, so the white suit reads on light terminal themes too."""
+    """Hatch on a dark tile he drifts inside. Background fills the whole cell but a font's block glyph may not (line spacing),
+    so the top pixel rides on background and only differing bottoms draw a glyph: misfit glyphs skew heights, never leak colour."""
     sky = bg(VOID)
     def cell(top: str, bot: str) -> str:
-        return fg(PAL.get(top, VOID)) + bg(PAL.get(bot, VOID)) + UP
+        t, b = PAL.get(top, VOID), PAL.get(bot, VOID)
+        return bg(t) + (BLANK if t == b else fg(b) + DN)
     return [sky + BLANK * shift + "".join(cell(a, b) for a, b in zip(grid[r], grid[r + 1], strict=True)) + sky + BLANK * (DRIFT_MAX - shift) + "\x1b[0m"
             for r in range(0, len(grid), 2)]
 

@@ -156,7 +156,7 @@ def test_script_prints_upstream_then_five_line_sprite_and_caches(stub: str, tmp_
     Stub.reply = WATCHING
     lines = run(stub, tmp_path)
     assert lines[0] == "upstream:sess_abc" and len(lines) == 6
-    assert "\x1b[38;2;" in lines[1] and "▀" in "".join(lines[1:])
+    assert "\x1b[38;2;" in lines[1] and "▄" in "".join(lines[1:])
     text = plain(lines)
     assert "merging · task_abc" in text and "merged 1/3" in text and "harness hv_002 gen 2" in text and "leases ok" in text
     assert Stub.seen == [("/v1/hud?session_id=sess_abc", "Bearer hk-secret")]
