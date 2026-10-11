@@ -139,3 +139,7 @@ app.include_router(delegations)
 from api import policies  # noqa: E402  # imported last: it imports DB, Key, find from this module
 
 app.include_router(policies.router)
+
+from api import hooks  # noqa: E402  # imported last: it imports DB, find from this module
+
+app.include_router(hooks.router)

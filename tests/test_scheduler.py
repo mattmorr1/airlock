@@ -10,8 +10,20 @@ from test_api import DIGEST, TOKENS, auth
 from api.main import app
 from controller import scheduler
 from controller.db import Doc
+from controller.policies import accept_validation_guarded, promote
 from controller.scheduler import LeaseLost, claim, complete, enqueue, fail, heartbeat, on_validation_pass, run_worker
-from controller.states import Conflict, DelegationState, JobKind, JobStatus, TaskState, WorkerRunState, new_id, transition
+from controller.states import (
+    Conflict,
+    DelegationState,
+    EvolutionRunState,
+    JobKind,
+    JobStatus,
+    TaskState,
+    ValidationDecision,
+    WorkerRunState,
+    new_id,
+    transition,
+)
 from controller.states import Prefix as P
 
 pytestmark = pytest.mark.anyio
@@ -233,23 +245,83 @@ async def test_epoch_bump_requires_reapproval_and_guards(client: httpx.AsyncClie
     assert await db["delegations"].count_documents({"task_id": tid}) == 0
 
 
-@pytest.mark.parametrize(("sibling", "final"), [(DelegationState.ACCEPTED, True), (DelegationState.INTEGRATING, False)])
-async def test_validation_pass_enqueues_serial_integrate_tagged_final(db: AsyncDatabase[Doc], sibling: DelegationState, final: bool) -> None:
+async def lease(db: AsyncDatabase[Doc], job_id: str, attempts: int = 1) -> None:
+    await db["jobs"].update_one({"_id": job_id}, {"$set": {"status": JobStatus.RUNNING, "lease.owner": "w", "lease.fence": 1, "attempts": attempts}})
+
+
+async def test_validation_pass_enqueues_serial_integrate_parked_behind_unfinished_one(db: AsyncDatabase[Doc]) -> None:
     proj, tid, did, sib, now = new_id(P.PROJECT), new_id(P.TASK), new_id(P.DELEGATION), new_id(P.DELEGATION), datetime.now(UTC)
-    base: Doc = {"schema_version": 1, "project_id": proj, "task_id": tid}
+    base: Doc = {"schema_version": 1, "project_id": proj, "task_id": tid, "status": DelegationState.VALIDATING, "attempt": 1}
     await db["tasks"].insert_one({"_id": tid, "schema_version": 1, "project_id": proj, "status": TaskState.RUNNING, "revision": 2, "event_seq": 0,
                                   "contract": CONTRACT | {"assignments": CONTRACT["assignments"][:2]}, "created_at": now})
-    await db["delegations"].insert_many([{**base, "_id": did, "assignment_key": "service", "status": DelegationState.VALIDATING, "attempt": 1, "revision": 3},
-                                         {**base, "_id": sib, "assignment_key": "schema", "status": sibling, "attempt": 1, "revision": 4}])
+    await db["delegations"].insert_many([{**base, "_id": did, "assignment_key": "service", "revision": 3},
+                                         {**base, "_id": sib, "assignment_key": "schema", "revision": 4}])
     deleg = await get(db, "delegations", did)
     async with db.client.start_session() as s:
-        jid = await s.with_transaction(lambda s: on_validation_pass(s, db, deleg))
-    job, d = await get(db, "jobs", jid), await get(db, "delegations", did)
+        first = await s.with_transaction(lambda s: on_validation_pass(s, db, deleg))
+        second = await s.with_transaction(lambda s: on_validation_pass(s, db, {**base, "_id": sib, "revision": 4}))
+    job, parked, d = await get(db, "jobs", first), await get(db, "jobs", second), await get(db, "delegations", did)
     assert (d["status"], d["revision"]) == ("integrating", 4)
     assert (job["kind"], job["dedupe_key"], job["payload"]) == (
-        "integrate", f"{tid}:integrate:1", {"task_id": tid, "delegation_id": did, "attempt": 1, "integration_seq": 1, "final": final})
-    assert [e["type"] for e in await db["events"].find({"stream_id": tid}).to_list()] == ["delegation.integrating"]
+        "integrate", f"{tid}:integrate:1", {"task_id": tid, "delegation_id": did, "attempt": 1, "integration_seq": 1})
+    assert (job["available_at"] <= datetime.now(UTC), parked["available_at"], parked["payload"]["integration_seq"]) == (True, scheduler.PARKED, 2)
+    assert [e["type"] for e in await db["events"].find({"stream_id": tid}).to_list()] == ["delegation.integrating"] * 2
     with pytest.raises(Conflict):
         async with db.client.start_session() as s:
             await s.with_transaction(lambda s: on_validation_pass(s, db, deleg))
-    assert await db["jobs"].count_documents({"task_id": tid, "kind": "integrate"}) == 1
+    assert await db["jobs"].count_documents({"task_id": tid, "kind": "integrate"}) == 2
+    await lease(db, first)
+
+    async def noop(_: object) -> None:
+        return None
+
+    await complete(db, first, "w", 1, noop)
+    assert ((await get(db, "jobs", second))["available_at"] <= datetime.now(UTC), (await get(db, "tasks", tid))["integrations_done"]) == (True, 1)
+
+
+async def test_exhausted_job_fails_its_owner_in_the_same_transaction(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
+    tid, proj, _ = await approved_task(client, db, "exhaust")
+    run = (await delegate(client, tid, "schema", "exhaust-1")).json()
+    await lease(db, run["job_id"], attempts=3)
+    assert await fail(db, run["job_id"], "w", 1, "docker down") == JobStatus.FAILED
+    w, d = await get(db, "worker_runs", run["worker_run_id"]), await get(db, "delegations", run["delegation_id"])
+    assert (w["status"], d["status"]) == ("failed", "failed")
+    r = await client.post("/v1/tasks", headers=auth("bridge", "exhaust-2"), json={
+        "project_id": proj, "parent_session_id": "claude_parent_01", "request": "Implement login", "base_artifact_id": "art_base_01"})
+    plan_task, plan_job = r.json()["task_id"], r.json()["job_id"]
+    await lease(db, plan_job, attempts=3)
+    assert await fail(db, plan_job, "w", 1, "sdk timeout") == JobStatus.FAILED
+    assert (await get(db, "tasks", plan_task))["status"] == "failed"
+    failed = [e["payload"] for t in (tid, plan_task) for e in await db["events"].find({"stream_id": t, "type": "job.failed"}).to_list()]
+    assert failed == [{"job_id": run["job_id"], "kind": "launch", "error": "docker down", "owners": {w["_id"]: "failed", d["_id"]: "failed"}},
+                      {"job_id": plan_job, "kind": "plan", "error": "sdk timeout", "owners": {plan_task: "failed"}}]
+
+
+async def test_revoke_mid_run_is_inconclusive_and_next_delegate_needs_reapproval(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
+    tid, proj, _ = await approved_task(client, db, "revoke-mid")
+    run = (await delegate(client, tid, "schema", "revoke-mid-1")).json()
+    assert (await client.post(f"/v1/projects/{proj}/revoke", headers=auth("operator", "revoke-mid-2"))).status_code == 200
+    w = await get(db, "worker_runs", run["worker_run_id"])
+    async with db.client.start_session() as s:
+        assert await s.with_transaction(lambda s: accept_validation_guarded(s, db, ValidationDecision.PASS, w)) == ValidationDecision.INCONCLUSIVE
+    r = await delegate(client, tid, "routes", "revoke-mid-3")
+    assert (r.status_code, r.json()["error"]["code"]) == (409, "REAPPROVAL_REQUIRED")
+    assert await db["delegations"].count_documents({"task_id": tid}) == 1
+
+
+async def test_promotion_pins_next_delegation_while_running_one_keeps_its_version(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
+    tid, proj, hv1 = await approved_task(client, db, "promo")
+    schema = (await delegate(client, tid, "schema", "promo-1")).json()
+    await set_status(db, "worker_runs", {"_id": schema["worker_run_id"]}, WorkerRunState.RUNNING)
+    hv2, evo = new_id(P.HARNESS_VERSION), new_id(P.EVOLUTION_RUN)
+    await db["harness_versions"].insert_one(harness(proj, hv2, 2, 2))
+    await db["evolution_runs"].insert_one({"_id": evo, "schema_version": 1, "project_id": proj, "status": EvolutionRunState.ELIGIBLE, "revision": 3,
+                                           "constraint_epoch": 1, "baseline_harness_version_id": hv1, "candidate_harness_version_id": hv2,
+                                           "created_at": datetime.now(UTC)})
+    async with db.client.start_session() as s:
+        assert await s.with_transaction(lambda s: promote(s, db, evo, "evaluator")) == EvolutionRunState.PROMOTED
+    await set_status(db, "delegations", {"_id": schema["delegation_id"]}, DelegationState.ACCEPTED)
+    r = await delegate(client, tid, "service", "promo-2")
+    assert (r.status_code, r.json()["harness_version_id"]) == (202, hv2)
+    pins = {w["_id"]: (w["status"], w["harness_version_id"]) for w in await db["worker_runs"].find({"task_id": tid}).to_list()}
+    assert pins == {schema["worker_run_id"]: ("running", hv1), r.json()["worker_run_id"]: ("queued", hv2)}

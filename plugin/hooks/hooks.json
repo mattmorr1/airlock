@@ -1,0 +1,16 @@
+{
+  "description": "Airlock gates: PreToolUse on Agent and repository writes, blocking Stop while a task is approved or running",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Edit|Write|NotebookEdit",
+        "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook.py", "timeout": 5}]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook.py", "timeout": 5}]
+      }
+    ]
+  }
+}

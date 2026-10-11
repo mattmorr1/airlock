@@ -195,6 +195,7 @@ async def test_every_route_and_dependency_is_async() -> None:
     assert {r.path for r in routes} == {"/v1/projects", "/v1/tasks", "/v1/tasks/{task_id}/approve", "/v1/tasks/{task_id}", "/v1/jobs/{job_id}",
                                        "/v1/tasks/{task_id}/delegations",
                                        "/v1/tasks/{task_id}/events", "/v1/projects/{project_id}/events",
-                                       "/v1/projects/{project_id}/rollback", "/v1/projects/{project_id}/revoke"}
+                                       "/v1/projects/{project_id}/rollback", "/v1/projects/{project_id}/revoke",
+                                       "/v1/hooks/pre-tool-use", "/v1/hooks/lifecycle"}
     sync = [(r.path, d.call) for r in routes for d in deps(r.dependant) if d.call and not inspect.iscoroutinefunction(d.call)]
     assert sync == []
