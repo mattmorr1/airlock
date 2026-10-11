@@ -86,7 +86,7 @@ def propose(
         "schema_version": 1,
         "project_id": project_id,
         "trigger_validation_run_id": trigger_validation_run_id,
-        "status": EvolutionState.GENERATING.value,
+        "status": EvolutionState.PROPOSED.value,
         "revision": 1,
         "baseline_harness_version_id": baseline_harness_version_id,
         "candidate_harness_version_id": None,
@@ -102,17 +102,73 @@ def propose(
         "promotion": None,
         "created_at": utcnow(),
     })
+    generate(run_id)
+    return run_id
 
-    candidate_config, hypothesis, changes = propose_config(baseline_config, trigger.get("behavior_delta", {}))
-    candidate = harness.create_harness_version(
-        project_id=project_id,
-        config=candidate_config,
-        parent_id=baseline_harness_version_id,
-        created_by_evolution_run_id=run_id,
-    )
+
+def open_run(
+    *,
+    project_id: str,
+    baseline_harness_version_id: str,
+    trigger_validation_run_id: str | None = None,
+    applications: list[dict] | None = None,
+    holdout_suite_version_id: str = "holdout_auth_001",
+) -> str:
+    """Create a proposed evolution run WITHOUT generating the candidate.
+
+    Used when generation + evaluation run as a separate evolve job.
+    """
+    run_id = new_id("evo")
+    col("evolution_runs").insert_one({
+        "_id": run_id,
+        "schema_version": 1,
+        "project_id": project_id,
+        "trigger_validation_run_id": trigger_validation_run_id,
+        "status": EvolutionState.PROPOSED.value,
+        "revision": 1,
+        "baseline_harness_version_id": baseline_harness_version_id,
+        "candidate_harness_version_id": None,
+        "hypothesis": "",
+        "changes": [],
+        "evaluation": {
+            "holdout_suite_version_id": holdout_suite_version_id,
+            "applications": applications or [],
+            "baseline_run_ids": [],
+            "candidate_run_ids": [],
+            "metrics": None,
+        },
+        "promotion": None,
+        "created_at": utcnow(),
+    })
+    return run_id
+
+
+def generate(evolution_run_id: str) -> str:
+    """Generate the candidate harness version for a proposed run (idempotent).
+
+    Separated from `propose` so the evolve job can run generation and evaluation
+    as distinct, retry-safe steps.
+    """
+    run = col("evolution_runs").find_one({"_id": evolution_run_id})
+    if run is None:
+        raise KeyError(f"unknown evolution run {evolution_run_id!r}")
+    if run.get("candidate_harness_version_id"):
+        return run["candidate_harness_version_id"]
 
     col("evolution_runs").update_one(
-        {"_id": run_id},
+        {"_id": evolution_run_id}, {"$set": {"status": EvolutionState.GENERATING.value}}
+    )
+    baseline_config = harness.get_config(run["baseline_harness_version_id"])
+    trigger = col("validation_runs").find_one({"_id": run.get("trigger_validation_run_id")}) or {}
+    candidate_config, hypothesis, changes = propose_config(baseline_config, trigger.get("behavior_delta", {}))
+    candidate = harness.create_harness_version(
+        project_id=run["project_id"],
+        config=candidate_config,
+        parent_id=run["baseline_harness_version_id"],
+        created_by_evolution_run_id=evolution_run_id,
+    )
+    col("evolution_runs").update_one(
+        {"_id": evolution_run_id},
         {"$set": {
             "status": EvolutionState.EVALUATING.value,
             "candidate_harness_version_id": candidate["_id"],
@@ -120,4 +176,4 @@ def propose(
             "changes": changes,
         }},
     )
-    return run_id
+    return candidate["_id"]
