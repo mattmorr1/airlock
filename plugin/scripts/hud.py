@@ -13,7 +13,7 @@ from typing import Any
 
 TIMEOUT = 0.3
 HOME = Path.home() / ".airlock"
-# Hatch: 12x10 astronaut (dome, blue visor with tall eyes, blue collar, chest light, boots); "." keeps the terminal backdrop.
+# Hatch: 12x10 astronaut (dome, blue visor with tall eyes, blue collar, chest light, boots); "." is the dark VOID tile.
 PAL: dict[str, tuple[int, int, int]] = {"W": (242, 245, 250), "G": (174, 187, 205), "N": (28, 43, 90), "V": (46, 91, 216), "E": (234, 243, 255),
                                         "L": (156, 194, 255), "B": (61, 123, 247), "A": (52, 211, 153), "R": (244, 63, 94), "Y": (251, 191, 36)}
 _HEAD, _VISOR, _COLLAR, _LEGS = [".....WW.....", "..WWWWWWWG..", ".WWLVVVVVWG."], ".WWNVVVVNWG.", "..GBBBBBBG..", ["..GWWWWWWG..", "...BB..BB..."]
@@ -48,9 +48,10 @@ HATCH = {"content": "idle", "watching": "working", "waiting": "alert", "alarm": 
 HATCH_BY_REASON = {"done": "success", "planning": "thinking"}
 TONE = {"content": (52, 211, 153), "watching": (116, 229, 255), "waiting": (251, 191, 36), "alarm": (244, 63, 94), "unwell": (160, 171, 184)}
 MUTED = (160, 171, 184)
+VOID = (17, 19, 30)  # backdrop tile behind Hatch
 FACE = {"content": "(^_^)", "watching": "(o_o)", "waiting": "(-_-)", "alarm": "(O_O)!", "unwell": "(x_x)"}
 DRIFT = [0, 0, 1, 2, 2, 1, 0, 0, 0, 1]  # columns, one step per 6s: a slow wander that never jumps
-DRIFT_MAX, UP, DN = max(DRIFT), "\u2580", "\u2584"
+DRIFT_MAX, UP = max(DRIFT), "\u2580"
 BLANK = "\u2800"  # braille blank: Claude Code strips leading spaces per statusline row, which would shear the sprite
 WORD = {("content", "idle"): "airlock idle", ("content", "done"): "task done", ("watching", "merging"): "merging", ("watching", "planning"): "planning",
         ("waiting", "approve"): "waiting on you", ("waiting", "delegate"): "ready to delegate", ("alarm", "repair"): "needs repair",
@@ -77,15 +78,16 @@ def fg(rgb: tuple[int, int, int]) -> str:
     return f"\x1b[38;2;{rgb[0]};{rgb[1]};{rgb[2]}m"
 
 
+def bg(rgb: tuple[int, int, int]) -> str:
+    return f"\x1b[48;2;{rgb[0]};{rgb[1]};{rgb[2]}m"
+
+
 def halfblocks(grid: list[str], shift: int) -> list[str]:
+    """Hatch on a dark tile he drifts inside, so the white suit reads on light terminal themes too."""
+    sky = bg(VOID)
     def cell(top: str, bot: str) -> str:
-        if top == "." and bot == ".":
-            return BLANK
-        if top == ".":
-            return f"{fg(PAL[bot])}{DN}\x1b[0m"
-        b = PAL.get(bot)
-        return fg(PAL[top]) + (f"\x1b[48;2;{b[0]};{b[1]};{b[2]}m" if b else "") + UP + "\x1b[0m"
-    return [BLANK * shift + "".join(cell(a, b) for a, b in zip(grid[r], grid[r + 1], strict=True)) + BLANK * (DRIFT_MAX - shift)
+        return fg(PAL.get(top, VOID)) + bg(PAL.get(bot, VOID)) + UP
+    return [sky + BLANK * shift + "".join(cell(a, b) for a, b in zip(grid[r], grid[r + 1], strict=True)) + sky + BLANK * (DRIFT_MAX - shift) + "\x1b[0m"
             for r in range(0, len(grid), 2)]
 
 
