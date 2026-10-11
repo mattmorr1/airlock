@@ -1,115 +1,125 @@
-"""Collections, indexes, and schema validators (spec section 8).
+import asyncio
+from enum import StrEnum
 
-Shared schema — the frozen contract both halves of Airlock agree on. Authored
-here so either side can stand up a database; Person A refines validators as the
-API contracts settle. Controller-level invariants (cross-document ownership,
-DAG consistency, allowed transitions) live in application code, not here —
-MongoDB schema validation does not implement those relationships.
-"""
-from __future__ import annotations
+from pymongo import ASCENDING, IndexModel
+from pymongo.asynchronous.database import AsyncDatabase
 
-from pymongo import ASCENDING
-from pymongo.database import Database
-from pymongo.errors import CollectionInvalid
+from controller import db
+from controller.db import Doc
+from controller.states import (
+    DelegationState,
+    EvolutionRunState,
+    IntegrationRunState,
+    JobKind,
+    JobStatus,
+    Prefix,
+    TaskState,
+    ValidationDecision,
+    WorkerRunState,
+)
 
-from common.db import COLLECTIONS, get_db
+DATE: Doc = {"bsonType": "date"}
+OPT_DATE: Doc = {"bsonType": ["date", "null"]}
+INT: Doc = {"bsonType": ["int", "long"], "minimum": 0}
+STR: Doc = {"bsonType": "string"}
+STRICT: Doc = {"validationLevel": "strict", "validationAction": "error"}
 
-# Minimal $jsonSchema validators: required identifiers, schema versions, and
-# Date fields. Kept lenient (moderate level) so controller logic owns the richer
-# cross-document rules.
-VALIDATORS: dict[str, dict] = {
-    "projects": {"required": ["_id", "schema_version"]},
-    "tasks": {"required": ["_id", "schema_version", "project_id", "status"]},
-    "delegations": {"required": ["_id", "schema_version", "project_id", "task_id", "assignment_key"]},
-    "worker_runs": {"required": ["_id", "schema_version", "project_id", "task_id", "delegation_id", "status"]},
-    "artifacts": {"required": ["_id", "schema_version", "project_id", "kind", "tree_hash"]},
-    "validation_runs": {"required": ["_id", "schema_version", "project_id", "kind"]},
-    "harness_versions": {"required": ["_id", "schema_version", "project_id", "version", "config_digest"]},
-    "evolution_runs": {"required": ["_id", "schema_version", "project_id", "status", "baseline_harness_version_id"]},
-    "integration_runs": {"required": ["_id", "schema_version", "project_id", "task_id", "status"]},
-    "jobs": {"required": ["_id", "schema_version", "project_id", "kind", "status", "dedupe_key"]},
-    "events": {"required": ["_id", "schema_version", "project_id", "sequence", "type"]},
+
+def ref(*prefixes: Prefix) -> Doc:
+    return {"bsonType": "string", "pattern": f"^({'|'.join(prefixes)})_"}
+
+
+def enum(e: type[StrEnum], *extra: None) -> Doc:
+    return {"enum": [*(m.value for m in e), *extra]}
+
+
+def schema(prefix: Prefix, required: Doc, optional: Doc | None = None) -> Doc:
+    props = {"_id": ref(prefix), "schema_version": {"bsonType": ["int", "long"], "minimum": 1}, **required}
+    return {"$jsonSchema": {"bsonType": "object", "required": ["_id", "schema_version", *required], "properties": props | (optional or {})}}
+
+
+def ix(*fields: str, **opts: object) -> IndexModel:
+    return IndexModel([(f, ASCENDING) for f in fields], **opts)
+
+
+def exists(field: str) -> Doc:
+    return {field: {"$exists": True}}
+
+
+P = Prefix
+PROJ, TASK = ref(P.PROJECT), ref(P.TASK)
+
+COLLECTIONS: dict[str, tuple[Doc, list[IndexModel]]] = {
+    "projects": (
+        schema(P.PROJECT, {"created_at": DATE}, {"event_seq": INT, "validated_harness_ids": {"bsonType": "array", "items": ref(P.HARNESS_VERSION)}}),
+        [ix("repository.registered_root_id", unique=True, partialFilterExpression=exists("repository.registered_root_id"))],
+    ),
+    "tasks": (
+        schema(P.TASK, {"project_id": PROJ, "status": enum(TaskState), "created_at": DATE},
+               {"event_seq": INT, "approval": {"bsonType": ["object", "null"], "properties": {"approved_at": DATE}}}),
+        [ix("project_id", "status", "created_at"), ix("parent_session_id", "status")],
+    ),
+    "delegations": (
+        schema(P.DELEGATION, {"project_id": PROJ, "task_id": TASK, "assignment_key": STR, "status": enum(DelegationState), "attempt": INT}),
+        [ix("task_id", "assignment_key", unique=True), ix("task_id", "status")],
+    ),
+    "worker_runs": (
+        schema(P.WORKER_RUN, {"project_id": PROJ, "task_id": TASK, "delegation_id": ref(P.DELEGATION), "attempt": INT,
+                              "status": enum(WorkerRunState)}, {"started_at": OPT_DATE, "finished_at": OPT_DATE}),
+        [ix("delegation_id", "attempt", unique=True), ix("task_id", "status")],
+    ),
+    "artifacts": (
+        schema(P.ARTIFACT, {"project_id": PROJ, "kind": STR, "created_at": DATE}),
+        [ix("project_id", "tree_hash"), ix("task_id", "kind")],
+    ),
+    "validation_runs": (
+        schema(P.VALIDATION_RUN, {"project_id": PROJ, "created_at": DATE}, {"decision": enum(ValidationDecision, None), "input_digest": STR}),
+        [ix("task_id", "created_at"), ix("input_digest", "status")],
+    ),
+    "harness_versions": (
+        schema(P.HARNESS_VERSION, {"project_id": PROJ, "version": INT, "created_at": DATE}),
+        [ix("project_id", "version", unique=True), ix("project_id", "parent_id")],
+    ),
+    "evolution_runs": (
+        schema(P.EVOLUTION_RUN, {"project_id": PROJ, "status": enum(EvolutionRunState), "created_at": DATE}),
+        [ix("project_id", "status")],
+    ),
+    "integration_runs": (
+        schema(P.INTEGRATION_RUN, {"project_id": PROJ, "task_id": TASK, "status": enum(IntegrationRunState)}),
+        [ix("task_id", "status")],
+    ),
+    "jobs": (
+        schema(P.JOB, {"kind": enum(JobKind), "status": enum(JobStatus), "dedupe_key": STR, "available_at": DATE, "created_at": DATE},
+               {"lease": {"bsonType": "object", "properties": {"expires_at": OPT_DATE}}}),
+        [ix("dedupe_key", unique=True), ix("status", "available_at"), ix("status", "lease.expires_at")],
+    ),
+    "events": (
+        schema(P.EVENT, {"project_id": PROJ, "stream_id": ref(P.TASK, P.PROJECT), "sequence": INT, "type": STR, "created_at": DATE}),
+        [ix("stream_id", "sequence", unique=True),
+         ix("project_id", "actor_id", "source_event_id", unique=True, partialFilterExpression=exists("source_event_id"))],
+    ),
 }
 
 
-def _json_schema(required: list[str]) -> dict:
-    return {
-        "$jsonSchema": {
-            "bsonType": "object",
-            "required": required,
-            "properties": {"schema_version": {"bsonType": "int"}},
-        }
-    }
+async def _apply(database: AsyncDatabase[Doc], name: str, validator: Doc, indexes: list[IndexModel], present: bool) -> None:
+    if present:
+        await database.command("collMod", name, validator=validator, **STRICT)
+    else:
+        await database.create_collection(name, validator=validator, **STRICT)
+    await database[name].create_indexes(indexes)
 
 
-def ensure_collections(db: Database | None = None) -> None:
-    db = get_db() if db is None else db
-    for name in COLLECTIONS:
-        validator = _json_schema(VALIDATORS[name]["required"])
-        try:
-            db.create_collection(name, validator=validator, validationLevel="moderate")
-        except CollectionInvalid:
-            # Already exists: update the validator in place.
-            db.command({"collMod": name, "validator": validator, "validationLevel": "moderate"})
+async def setup(database: AsyncDatabase[Doc]) -> None:
+    existing = set(await database.list_collection_names())
+    async with asyncio.TaskGroup() as tg:
+        for name, (validator, indexes) in COLLECTIONS.items():
+            tg.create_task(_apply(database, name, validator, indexes, name in existing))
 
 
-def ensure_indexes(db: Database | None = None) -> None:
-    db = get_db() if db is None else db
-
-    db.projects.create_index(
-        [("repository.registered_root_id", ASCENDING)],
-        unique=True,
-        partialFilterExpression={"repository.registered_root_id": {"$exists": True}},
-        name="uniq_registered_root",
-    )
-
-    db.tasks.create_index([("project_id", 1), ("status", 1), ("created_at", 1)], name="by_project_status")
-    db.tasks.create_index([("parent_session_id", 1), ("status", 1)], name="by_parent_session")
-
-    db.delegations.create_index([("task_id", 1), ("assignment_key", 1)], unique=True, name="uniq_assignment")
-    db.delegations.create_index([("task_id", 1), ("status", 1)], name="by_task_status")
-
-    db.worker_runs.create_index([("delegation_id", 1), ("attempt", 1)], unique=True, name="uniq_attempt")
-    db.worker_runs.create_index([("task_id", 1), ("status", 1)], name="by_task_status")
-
-    db.artifacts.create_index([("project_id", 1), ("tree_hash", 1)], name="by_tree_hash")
-    db.artifacts.create_index([("task_id", 1), ("kind", 1)], name="by_task_kind")
-
-    db.validation_runs.create_index([("task_id", 1), ("created_at", 1)], name="by_task_created")
-    # Exact-input cache key for completed runs (spec section 8): not just a diff
-    # hash — tree, baseline, harness, suite, contract, runner image, seed, epoch.
-    db.validation_runs.create_index(
-        [("inputs.cache_key", 1)],
-        unique=True,
-        partialFilterExpression={"inputs.cache_key": {"$exists": True}},
-        name="uniq_input_cache",
-    )
-
-    db.harness_versions.create_index([("project_id", 1), ("version", 1)], unique=True, name="uniq_version")
-    db.harness_versions.create_index([("project_id", 1), ("parent_id", 1)], name="by_parent")
-
-    db.evolution_runs.create_index([("project_id", 1), ("status", 1)], name="by_project_status")
-    db.integration_runs.create_index([("task_id", 1), ("status", 1)], name="by_task_status")
-
-    db.jobs.create_index([("dedupe_key", 1)], unique=True, name="uniq_dedupe")
-    db.jobs.create_index([("status", 1), ("available_at", 1)], name="by_ready")
-    db.jobs.create_index([("status", 1), ("lease.expires_at", 1)], name="by_lease_expiry")
-
-    db.events.create_index([("task_id", 1), ("sequence", 1)], unique=True, name="uniq_task_seq")
-    db.events.create_index(
-        [("project_id", 1), ("actor_id", 1), ("source_event_id", 1)],
-        unique=True,
-        partialFilterExpression={"source_event_id": {"$exists": True}},
-        name="uniq_source_event",
-    )
-
-
-def setup(db: Database | None = None) -> None:
-    db = get_db() if db is None else db
-    ensure_collections(db)
-    ensure_indexes(db)
+async def main() -> None:
+    async with db.client() as c:
+        await setup(db.database(c))
 
 
 if __name__ == "__main__":
-    setup()
-    print("airlock schema ready")
+    asyncio.run(main())
