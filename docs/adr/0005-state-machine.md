@@ -14,8 +14,8 @@ The spec gives tasks ten states, including `awaiting_integration`, `validating`,
   - Integration runs carry their own state.
   - `GET /v1/tasks/{id}` returns the task together with its delegations.
   - Rejected: deriving a task state by precedence, which is lossy and adds write contention, and transitioning all ten spec states literally, which is wrong whenever siblings disagree.
-- **Completion rule.** When an integrate job is enqueued, it's tagged `final` if every other delegation is already `accepted`.
-  - Final validation runs the full task contract. If it passes, the task becomes `completed` with `final_artifact_id` set.
+- **Completion rule.** An integration is `final` if every other delegation is `accepted` when its integrate job runs (`integration_is_final`), not when it's enqueued: two siblings can pass validation before either is accepted. A task's integrations run one at a time, so the answer can't change mid-job.
+  - Final validation runs the full task contract. If it passes, `on_integration_pass` accepts the delegation and moves the task to `completed` with `final_artifact_id`, in one transaction.
   - Earlier integrations validate against that stage's criteria. Running the full login contract against the schema step alone would fail, because the routes don't exist yet.
   - There's no separate final-validation step.
 - **One table and one compare-and-set.** `ALLOWED: dict[Entity, dict[State, frozenset[State]]]` covers task, delegation, worker_run, integration_run, evolution_run, and job.
