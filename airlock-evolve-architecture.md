@@ -54,7 +54,7 @@ Implement logical components as one API process plus one job-worker process toda
 | Holdout evaluator | Fixed trusted suite | Promotion evidence |
 | Review surface | CLI plus compact evidence cards | Review of intent, behavior, and policy diffs |
 
-Use Atlas through PyMongo. Keep control-plane data separate from the target application's test database. Do not hand Atlas credentials to application code or coding workers. If using synchronous PyMongo, execute its blocking calls in FastAPI's thread pool or synchronous route handlers, not directly on an async event loop.
+Use Atlas through PyMongo. Keep control-plane data separate from the target application's test database. Do not hand Atlas credentials to application code or coding workers. The API and job-worker both use `pymongo.AsyncMongoClient` with async route handlers only; transaction callbacks contain only database work because they are retried ([ADR 0001](docs/adr/0001-mongo-setup.md)).
 
 ## 3. The complete task lifecycle
 
@@ -63,11 +63,11 @@ Example request: "Implement login and sessions: add the database schema, service
 1. Register the project and capture its starting tree. Require a known baseline; if the user's checkout is dirty, create a controller-owned snapshot of the current files without discarding or committing their edits in their original repository.
 2. Create a task. The planner converts the request into constraints, acceptance criteria, assignments, dependencies, and interface contracts.
 3. Confirm the task's effect contract through the operator interface. An LLM-generated plan cannot grant new privileges or broaden publication permissions.
-4. Schedule ready assignments. Every launch records the exact input snapshot, contract version, harness version, model, and worker identity.
+4. The parent session launches each ready assignment through `airlock_delegate`; the controller refuses any whose dependencies are not yet accepted ([ADR 0004](docs/adr/0004-scheduler.md)). Every launch records the exact input snapshot, contract version, harness version, model, and worker identity.
 5. Agent A implements the session schema. Freeze its candidate and validate it. Integrate it into the controller's staging branch if it meets that stage's criteria.
 6. Agents B and C start from that integrated revision. B implements `login()` and `createSession()`; C implements routes against the agreed signatures. These may run concurrently if their file scopes are independent.
 7. Freeze each output. A service-only candidate may need interface stubs for isolated checks; label those checks `partial`, not complete feature validation.
-8. Integrate B and C serially into a new candidate revision. Run the complete application suite against the combined revision. Resolve conflicts through a new repair assignment; never silently overwrite another worker's changes.
+8. Each passing candidate is integrated automatically, one at a time, onto the task's integrated revision; the integration that completes the last delegation is `final` and runs the complete application suite against the combined revision ([ADR 0005](docs/adr/0005-state-machine.md)). Resolve conflicts through a new repair assignment; never silently overwrite another worker's changes.
 9. Return precise repair evidence if requirements fail. A repair gets a new attempt and a new snapshot.
 10. Run any harness-learning job separately. Evaluate the old and candidate harness on fixed application revisions and held-out tasks before promotion.
 11. Produce a verified branch or patch. Publishing to an external remote is a separate controller action, authorized by the operator and bound to the final verified revision.
@@ -113,13 +113,14 @@ For today, arbitrary Bash is allowed only inside the bounded coding container. F
 
 | Interface | Use |
 |---|---|
-| `/airlock:run` skill | Establish an Airlock task and explain the managed flow |
-| `PreToolUse` on `ExitPlanMode` | Inspect explicit plan-mode output; retain the normal approval boundary |
-| `PreToolUse` on `Agent` | Observe/defer native coding delegation into the managed workflow |
+| `/airlock:run` skill | Establish an Airlock task (passing `${CLAUDE_SESSION_ID}` as `parent_session_id`) and explain the managed flow |
+| `PreToolUse` on `Agent` | While the session has an active task, deny non-read-only subagent types and redirect to `airlock_delegate`; allow `Explore`/`Plan` |
 | `SubagentStart` | Native-mode identity/context observation; it cannot veto spawning |
 | `SubagentStop` | Native-mode completion observation and repair feedback |
-| `PreToolUse` on mutation/publication tools | Prevent accidental bypass in the parent workflow |
-| `Stop` | Return task status or repair guidance; do not run a long evolution experiment inside the hook |
+| `PreToolUse` on `Edit`/`Write`/`NotebookEdit` | While the session has an active task, deny paths inside the registered repository; Bash is not gated |
+| `Stop` | Block while the task is `approved`/`running` with an actionable next step; allow on `planned` and terminal states; never run long work inside the hook |
+
+There is no `ExitPlanMode` hook: the controller writes the plan ([ADR 0003](docs/adr/0003-planner.md)). Hooks time out after 2 s; on timeout they deny only if the `~/.airlock/managed/<session_id>` marker exists ([ADR 0008](docs/adr/0008-plugin-and-mcp.md)).
 
 Hooks are adapters, not the scheduling engine. `Stop` and `SubagentStop` are turn/lifecycle signals, not proof of task completion. A background `Agent` launch can return before the worker finishes. Never classify launch acknowledgment as a completed candidate.
 
@@ -135,36 +136,33 @@ Planner output and evolution proposals are schema-constrained data. They never d
 
 | Tool | Input | Result |
 |---|---|---|
-| `airlock_plan` | Project ID, request | Draft task and contract |
-| `airlock_delegate` | Task ID, assignment ID | Worker run/job IDs |
-| `airlock_status` | Task ID | States and sanitized evidence |
-| `airlock_integrate` | Task ID, artifact IDs | Integration job ID |
+| `airlock_plan` | Project ID, parent session ID, request, base artifact ID | Draft task ID and plan job ID |
+| `airlock_delegate` | Task ID, assignment key | Delegation, worker run, and job IDs |
+| `airlock_status` | Task ID, optional `wait_seconds` (at most 50) | Task, delegation states, and sanitized evidence |
 
-The authenticated actor's scope determines which IDs it can use. Workers do not receive the operator tools for approval, promotion, or publishing.
+Integration is automatic, so there is no integrate tool ([ADR 0004](docs/adr/0004-scheduler.md)). The authenticated actor's scope determines which IDs it can use. Approval, revocation, rollback, and publishing are operator CLI actions, never MCP tools.
 
 ## 6. HTTP API contracts
 
-All mutating public endpoints require authentication and an `Idempotency-Key`. Validate references against the authenticated project/task scope. Operator, worker-host, runner, and evolver identities have different capabilities. Never accept caller-provided `approved_by` or trust labels. Store write-command receipts in `jobs` using `kind: command_receipt`, a project/actor/operation/key-scoped deduplication key, request digest, and cached result; completed receipts are not executable jobs. Create the receipt and corresponding state mutation in one MongoDB transaction. On a retry with a different request digest, return 409.
+All mutating public endpoints require authentication and an `Idempotency-Key`. Validate references against the authenticated project/task scope. Operator, worker-host, runner, and evolver identities have different capabilities. Never accept caller-provided `approved_by` or trust labels. Store write-command receipts in `jobs` using `kind: command_receipt`, a project/actor/operation/key-scoped deduplication key, request digest, and cached result; completed receipts are not executable jobs. Create the receipt and corresponding state mutation in one MongoDB transaction. On a retry with a different request digest, return 409; a duplicate whose receipt is not yet committed gets 409 `IN_PROGRESS`, retryable. Actors authenticate with per-role bearer tokens (`operator`, `bridge`, `hook`, `reader`) ([ADR 0002](docs/adr/0002-api-skeleton.md)).
+
+HTTP serves external actors only. The job-worker imports the controller library and reports results through `complete(job, result)` in one transaction, so launch, worker finish, validation, integration, evolution, and promotion are library calls, not routes.
 
 | Method and path | Actor | Purpose |
 |---|---|---|
 | `POST /v1/projects` | Operator | Register one permitted repository and its baseline |
-| `POST /v1/tasks` | Operator/parent bridge | Create draft plan and task |
-| `POST /v1/tasks/{id}/approve` | Operator | Confirm a specific contract digest/version |
-| `GET /v1/tasks/{id}` | Scoped reader | Read task and worker states |
-| `POST /v1/tasks/{id}/delegations` | Parent bridge/controller | Create an assignment within approved intent |
-| `POST /v1/delegations/{id}/launch` | Controller | Queue a managed worker |
+| `POST /v1/tasks` | Parent bridge | Create a `draft` task and queue its `plan` job; returns 202 |
+| `POST /v1/tasks/{id}/approve` | Operator | Confirm the exact `contract_digest`; records the constraint epoch |
+| `GET /v1/tasks/{id}` | Scoped reader | Read task and delegation states; optional `wait_seconds` long-poll |
+| `POST /v1/tasks/{id}/delegations` | Parent bridge | Create and launch a delegation for one approved assignment key |
 | `POST /v1/hooks/pre-tool-use` | Hook adapter | Fast policy decision; native JSON response |
-| `POST /v1/hooks/lifecycle` | Hook adapter | Record lifecycle signal |
-| `POST /v1/worker-runs/{id}/finish` | Worker supervisor | Stop/freeze run and queue validation |
-| `POST /v1/validation-runs` | Controller | Queue evaluation of immutable artifacts |
-| `POST /v1/integration-runs` | Controller | Queue composition and combined validation |
-| `POST /v1/evolution-runs` | Controller | Queue candidate harness generation and evaluation |
-| `POST /v1/evolution-runs/{id}/promote` | Promotion controller | Promote a passing candidate with version guards |
-| `POST /v1/projects/{id}/rollback` | Operator | Point to a previously validated harness version |
+| `POST /v1/hooks/lifecycle` | Hook adapter | Lifecycle signal; returns the `Stop` decision |
+| `POST /v1/projects/{id}/rollback` | Operator | Point to a version in `validated_harness_ids` |
+| `POST /v1/projects/{id}/revoke` | Operator | Increment the constraint epoch |
 | `POST /v1/tasks/{id}/publish` | Operator/publisher | Publish exact verified revision |
 | `GET /v1/jobs/{id}` | Scoped reader | Poll durable job result |
-| `GET /v1/tasks/{id}/events` | Scoped reader | SSE stream with reconnect cursor |
+| `GET /v1/tasks/{id}/events` | Scoped reader | Task event stream (SSE) with `Last-Event-ID` reconnect |
+| `GET /v1/projects/{id}/events` | Scoped reader | Project event stream (promotion, rollback, revocation) |
 
 Long operations return `202 Accepted` with a job ID. Hook policy checks should complete quickly; they don't wait for Docker builds or a full suite. Pending validation is an explicit state, not an implicit pass. On controller failure, block mutating actions in managed tasks and retain unapproved state. Read-only behavior can follow a separately documented degraded-mode policy.
 
@@ -175,42 +173,48 @@ Long operations return `202 Accepted` with a job ID. Hook policy checks should c
   "project_id": "proj_demo",
   "parent_session_id": "claude_parent_01",
   "request": "Implement login and sessions",
-  "base_artifact_id": "art_base_01",
-  "plan": {
-    "constraints": ["No credential material in application logs"],
-    "acceptance": ["Valid login creates one session", "Invalid login creates no session"],
-    "interface_contract": {
-      "sessions_columns": ["id", "user_id", "expires_at"],
-      "login_signature": "login(email, password) -> token"
-    },
-    "assignments": [
-      {"key": "schema", "depends_on": [], "file_scope": ["db/migrations/**"]},
-      {"key": "service", "depends_on": ["schema"], "file_scope": ["src/auth/service.py"]},
-      {"key": "routes", "depends_on": ["schema"], "file_scope": ["src/auth/routes.py"]}
-    ]
-  }
+  "base_artifact_id": "art_base_01"
 }
 ```
 
-Response:
+Response (`202`):
 
 ```json
 {
   "task_id": "task_auth_01",
-  "status": "planned",
-  "contract_version": 1,
-  "contract_digest": "sha256:contract-example",
-  "approval_required": true
+  "status": "draft",
+  "job_id": "job_plan_01"
 }
+```
+
+The `plan` job runs the controller's read-only planner session and moves the task to `planned` with a contract like the one below; `GET /v1/tasks/{id}` then returns `contract_digest` and `approval_required: true` ([ADR 0003](docs/adr/0003-planner.md)). File scopes are exact paths or `dir/**`; overlapping scopes without a dependency get an inferred edge.
+
+```json
+{
+  "constraints": ["No credential material in application logs"],
+  "acceptance": ["Valid login creates one session", "Invalid login creates no session"],
+  "interfaces": {"login": "login(email, password) -> token"},
+  "assignments": [
+    {"key": "schema", "depends_on": [], "file_scope": ["db/migrations/**"]},
+    {"key": "service", "depends_on": ["schema"], "file_scope": ["src/auth/service.py"]},
+    {"key": "routes", "depends_on": ["schema"], "file_scope": ["src/auth/routes.py"]}
+  ],
+  "inferred_edges": []
+}
+```
+
+Approve (operator CLI, `POST /v1/tasks/{id}/approve`):
+
+```json
+{"contract_digest": "sha256:contract-example"}
 ```
 
 ### Launch a delegation
 
+`POST /v1/tasks/{id}/delegations`; the input artifact and harness version are resolved by the controller:
+
 ```json
-{
-  "base_artifact_id": "art_schema_integrated",
-  "expected_task_revision": 4
-}
+{"assignment_key": "service"}
 ```
 
 Response:
@@ -237,19 +241,7 @@ A native hook denial response for a coding delegation in managed mode:
 }
 ```
 
-### Request combined validation
-
-```json
-{
-  "task_id": "task_auth_01",
-  "base_artifact_id": "art_schema_integrated",
-  "candidate_artifact_ids": ["art_service_01", "art_routes_01"],
-  "expected_task_revision": 9,
-  "suite_version_id": "suite_auth_001"
-}
-```
-
-API errors use `{ "error": { "code": "BASE_MISMATCH", "message": "...", "retryable": false } }`. Use 409 for stale revisions, digest conflicts, and unmet prerequisites; 403 for actor/scope violations; 422 for malformed contracts. Idempotency retries with different payload digests are 409 errors.
+API errors use `{ "error": { "code": "BASE_MISMATCH", "message": "...", "retryable": false } }`. Use 409 for stale revisions, digest conflicts, and unmet prerequisites; 403 for actor/scope violations; 422 for malformed contracts. Idempotency retries with different payload digests are 409 errors. Codes: `BASE_MISMATCH`, `STALE_REVISION`, `DEPENDENCY_UNMET`, `REAPPROVAL_REQUIRED`, `CAPACITY` (retryable), `IN_PROGRESS` (retryable).
 
 ## 7. MongoDB data model
 
@@ -269,12 +261,14 @@ Every document has `schema_version: 1`. Store real MongoDB UTC Date values, not 
   "active_harness_version_id": "hv_001",
   "harness_generation": 1,
   "constraint_epoch": 1,
+  "validated_harness_ids": ["hv_001"],
+  "event_seq": 3,
   "revision": 1,
   "created_at": "2026-10-11T19:30:00Z"
 }
 ```
 
-`registered_root_id` resolves to a host path known to the controller, not a caller-selected filesystem path. `constraint_epoch` changes on protected-boundary changes or revocation; it invalidates old eligibility decisions.
+`registered_root_id` resolves to a host path known to the controller, not a caller-selected filesystem path. `constraint_epoch` changes only through the operator revoke route; it invalidates old approvals, pinned runs at acceptance, and eligibility decisions. `validated_harness_ids` is the rollback allow-list; `event_seq` sequences the project event stream ([ADR 0007](docs/adr/0007-promotion-and-policies.md)).
 
 ### 7.2 `tasks`: intent, contract, and final result
 
@@ -292,9 +286,12 @@ Every document has `schema_version: 1`. Store real MongoDB UTC Date values, not 
   "contract": {
     "constraints": ["No credential material in application logs"],
     "acceptance": ["Valid login creates one session", "Invalid login creates no session"],
-    "interfaces": {"login": "login(email,password)->token"}
+    "interfaces": {"login": "login(email,password)->token"},
+    "assignments": [{"key": "service", "depends_on": ["schema"], "file_scope": ["src/auth/service.py"]}],
+    "inferred_edges": []
   },
-  "approval": {"actor_id": "operator_01", "approved_at": "2026-10-11T19:31:00Z"},
+  "approval": {"actor_id": "operator_01", "contract_digest": "sha256:contract-example", "constraint_epoch": 1, "approved_at": "2026-10-11T19:31:00Z"},
+  "event_seq": 17,
   "base_artifact_id": "art_base_01",
   "delegation_ids": ["del_schema_01", "del_service_01", "del_routes_01"],
   "final_artifact_id": null,
@@ -303,7 +300,7 @@ Every document has `schema_version: 1`. Store real MongoDB UTC Date values, not 
 }
 ```
 
-Task states: `draft`, `planned`, `approved`, `running`, `awaiting_integration`, `validating`, `repair_required`, `completed`, `failed`, `cancelled`. Completion means verified task output, not necessarily remote publication. Persist publication separately in the task result with exact artifact and actor.
+Task states: `draft`, `planned`, `approved`, `running`, `completed`, `failed`, `cancelled`. Integration, validation, and repair detail lives on delegations and integration runs, because concurrent siblings can be in different phases ([ADR 0005](docs/adr/0005-state-machine.md)). Completion means verified task output, not necessarily remote publication. Persist publication separately in the task result with exact artifact and actor.
 
 ### 7.3 `delegations`: assignment and dependencies
 
@@ -328,7 +325,7 @@ Task states: `draft`, `planned`, `approved`, `running`, `awaiting_integration`, 
 }
 ```
 
-Dependencies are satisfied only by controller-accepted integrated outputs, not worker completion messages. Reject cycles. A parent assignment may spawn children only through controller authorization; disable unmanaged nested workers in the demo.
+Delegation states: `running`, `validating`, `integrating`, `accepted`, `repair_required`, `failed`, `cancelled`; a repair returns to `running` with `attempt + 1`, capped at two attempts. `file_scope` entries are exact paths or `dir/**` only, matched by one shared `scope_matches()`. Dependencies are satisfied only by controller-accepted integrated outputs, not worker completion messages. Reject cycles. A parent assignment may spawn children only through controller authorization; disable unmanaged nested workers in the demo.
 
 ### 7.4 `worker_runs`: execution identity and snapshot lifecycle
 
@@ -472,7 +469,7 @@ Harness versions do not carry a mutable `active` flag. The project's pointer sel
 }
 ```
 
-States: `proposed`, `generating`, `evaluating`, `eligible`, `promoted`, `rejected`, `failed`. Evidence and metrics are written by the evaluator, not the evolver. Only the promotion controller can advance the active pointer. A candidate that blocks every task fails legitimate-task completion checks.
+States: `proposed`, `generating`, `evaluating`, `eligible`, `promoted`, `rejected`, `failed`. Evidence and metrics are written by the evaluator, not the evolver. Only the promotion controller can advance the active pointer: an eligible result is promoted inside the evaluator's completion transaction, and a stale guard yields `rejected` with `reason: stale_baseline | stale_epoch` ([ADR 0007](docs/adr/0007-promotion-and-policies.md)). A candidate that blocks every task fails legitimate-task completion checks.
 
 ### 7.9 `integration_runs`: composition and final revision
 
@@ -516,7 +513,7 @@ One integration writer per task. If the integration base moves, recompose/revali
 }
 ```
 
-Claim with atomic `find_one_and_update`, increment the fencing token, heartbeat the lease, and condition completion on owner plus token. Reclaim expired leases. Delivery is at-least-once; external effects and artifact creation must be idempotent. Model inference can still be duplicated after an ambiguous crash, so record this possibility rather than claiming exactly-once execution.
+Kinds: `plan`, `launch`, `validate`, `integrate`, `evolve`, plus non-executable `command_receipt`. Claim with one atomic `find_one_and_update` over `{$or: [{status: queued, available_at <= now}, {status: running, "lease.expires_at" < now}]}`, which reclaims expired leases at claim time; increment the fencing token, heartbeat every 10 s on a 30 s lease from a dedicated task, and condition completion on owner plus token. Failures back off with full jitter (cap 60 s); after 3 attempts the job fails ([ADR 0004](docs/adr/0004-scheduler.md)). Delivery is at-least-once; external effects and artifact creation must be idempotent. Model inference can still be duplicated after an ambiguous crash, so record this possibility rather than claiming exactly-once execution.
 
 ### 7.11 `events`: append-only application audit and live stream
 
@@ -526,6 +523,7 @@ Claim with atomic `find_one_and_update`, increment the fencing token, heartbeat 
   "schema_version": 1,
   "project_id": "proj_demo",
   "task_id": "task_auth_01",
+  "stream_id": "task_auth_01",
   "sequence": 17,
   "type": "validation.failed",
   "actor_id": "runner_01",
@@ -535,7 +533,7 @@ Claim with atomic `find_one_and_update`, increment the fencing token, heartbeat 
 }
 ```
 
-Allocate a per-task sequence and append its event with the corresponding state transition in a transaction where practical. "Append-only" means API and database-role restrictions; it is not cryptographic tamper-proof storage. Change streams wake the SSE broadcaster; clients reconnect using stored event sequences. Persist change-stream resume tokens, and rebuild from event documents if a token is no longer resumable.
+Each event carries `stream_id` (the task ID, or the project ID for promotion, rollback, and revocation events). Allocate its sequence by incrementing `event_seq` on the owning task or project inside the same transaction as the state transition. "Append-only" means API and database-role restrictions; it is not cryptographic tamper-proof storage. One change stream per process only wakes SSE handlers, which re-read events by `(stream_id, sequence)`; clients reconnect with `Last-Event-ID`. The sequence is the durable cursor, so resume tokens are not persisted ([ADR 0006](docs/adr/0006-events-and-sse.md)).
 
 ## 8. Indexes, validation, and access roles
 
@@ -551,22 +549,22 @@ Allocate a per-task sequence and append its event with the corresponding state t
 | `evolution_runs` | `(project_id, status)` |
 | `integration_runs` | `(task_id, status)` |
 | `jobs` | unique `dedupe_key`; `(status, available_at)`; `(status, lease.expires_at)` |
-| `events` | unique `(task_id, sequence)`; unique `(project_id, actor_id, source_event_id)` |
+| `events` | unique `(stream_id, sequence)`; partial unique `(project_id, actor_id, source_event_id)` where `source_event_id` exists |
 
 For optional unique fields such as native tool-use identifiers, use a partial unique index restricted to documents containing the field. Missing values should not cause unrelated records to collide. An exact-input validation-cache key includes tree, baseline, harness, suite, contract, runner image, seed, and constraint epoch. It is not just a diff hash.
 
-Apply `$jsonSchema` validators to required identifiers, schema versions, Date fields, and state enums. Use Pydantic to reject unknown fields on API contracts. Controller validation additionally checks cross-document ownership, DAG consistency, and allowed transitions; MongoDB schema validation does not implement those relationships automatically.
+Apply `$jsonSchema` validators (`validationLevel: strict`, `validationAction: error`) to required identifiers, schema versions, Date fields, and state enums; documents stay open to additional fields. The state enums and ID prefixes are defined once in `controller/states.py`, and `mongo/setup.py` builds the validators from them ([ADR 0001](docs/adr/0001-mongo-setup.md)). Use Pydantic to reject unknown fields on API contracts. Controller validation additionally checks cross-document ownership, DAG consistency, and allowed transitions; MongoDB schema validation does not implement those relationships automatically.
 
 Roles:
 
 | Role | Allowed authority |
 |---|---|
-| Operator | Approve intent, request rollback, authorize publication |
+| Operator | Approve intent, request rollback, revoke (increment constraint epoch), authorize publication |
 | Controller | Schedule runs, apply state transitions, select policies |
 | Supervisor | Report its launched worker and finalized artifact |
 | Runner | Append scoped observations and validation outcomes |
 | Evolver | Submit proposals; no policy pointer writes |
-| Promotion controller | Promote only evaluator-eligible candidates |
+| Promotion controller | Promote only evaluator-eligible candidates; a library call (`promote()`) inside the evaluator's completion transaction, not a separate process |
 | UI reader | Read sanitized task state and evidence |
 | Coding worker / target application | No direct Atlas access |
 
@@ -631,9 +629,9 @@ Evaluate v1 and v2 on the same frozen application artifacts. Include fresh canar
 
 Promotion thresholds for this demo are predeclared: no regressions on protected invariants, strictly fewer escaped failures on the fixed comparison set, no decrease in legitimate-task acceptance/completion on that set, and bounded execution overhead. Report counts and suite size, not generalized percentages from one case.
 
-The promotion controller atomically checks that the baseline harness is still active, the constraint epoch is unchanged, and the evaluator marked the candidate eligible. It updates the project pointer and appends a promotion event. A stale candidate must be rebased or reevaluated. Existing worker runs retain their pinned harness version; new delegations use the promoted version. Revocations are checked immediately even for pinned runs.
+Promotion is automatic: when the evaluator's result is eligible, its completion transaction calls the promotion controller, which atomically checks that the baseline harness is still active and the constraint epoch is unchanged. It updates the project pointer, adds the candidate to `validated_harness_ids`, and appends a promotion event to the project stream. A stale candidate is `rejected` (`stale_baseline` or `stale_epoch`) and must be reevaluated; of two candidates on one baseline, the first to commit wins ([ADR 0007](docs/adr/0007-promotion-and-policies.md)). Existing worker runs retain their pinned harness version; new delegations use the promoted version. Revocations are checked immediately even for pinned runs.
 
-Rollback selects a previously validated version and increments the harness generation. It does not mutate the historical version document or erase evidence.
+Rollback selects a version in `projects.validated_harness_ids` and increments the harness generation; it does not change the constraint epoch. Revocation is a separate operator action that increments the epoch. It does not mutate the historical version document or erase evidence.
 
 ## 11. Reliability and version rules
 
@@ -658,8 +656,10 @@ Rollback selects a previously validated version and increments the harness gener
 | `bridge/server.py` | MCP tools |
 | `api/main.py` | FastAPI routes |
 | `api/models.py` | Pydantic contracts |
-| `controller/planner.py` | Plan validation and DAG |
-| `controller/scheduler.py` | Dependencies, jobs, leases |
+| `controller/states.py` | State enums, ID prefixes, transition table, `transition()` |
+| `controller/planner.py` | Read-only LLM `plan` job, plan validation, scope grammar, DAG, digest |
+| `controller/scheduler.py` | Delegate route logic, jobs library (claim, heartbeat, complete, fail), auto-integration |
+| `cli/airlock.py` | Operator CLI: approve, revoke, rollback |
 | `controller/workers.py` | SDK/container worker launch |
 | `controller/snapshots.py` | Freeze, manifest, digest |
 | `controller/integration.py` | Serial composition |

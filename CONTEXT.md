@@ -1,134 +1,120 @@
 # Airlock
 
-Test-first multi-agent development: a human approves an executable Contract, parallel Subagents implement it, and deterministic gates decide what merges.
+A controller for delegated coding work: it plans a task, launches bounded workers, validates and integrates their frozen output, and evolves its own harness only on independent evidence. Spec: [airlock-evolve-architecture.md](airlock-evolve-architecture.md). Decisions: [docs/adr/](docs/adr/).
 
 ## Language
 
 ### Planning
 
-**Contract**:
-The human-approved executable output of planning: Stubs, Visible tests, Effect manifests, and Write sets for every Task.
-_Avoid_: spec, plan (the plan is prose; the Contract is what gets approved)
+**Project**:
+One registered repository with its baseline artifact, active harness pointer, and constraint epoch.
 
 **Task**:
-One unit of Contract work assigned to exactly one Subagent.
-_Avoid_: job, ticket, subtask
+One user request and everything done for it, from plan to verified output.
+_Avoid_: job, ticket. A Task is never one worker's unit; that is a Delegation.
 
-**Interface commit**:
-The commit that adds every Stub and every shared declaration (type members, schema fields) the Contract needs, made before any test is generated.
-_Avoid_: scaffold
+**Contract**:
+The controller-generated, operator-approved plan for a Task: constraints, acceptance criteria, interfaces, Assignments, and Inferred edges, identified by its digest.
+_Avoid_: spec, plan (the plan is the draft; the Contract is what is approved)
 
-**Stub**:
-A typed declaration of a new symbol whose body only signals not-implemented.
+**Assignment**:
+One keyed unit of work inside a Contract, with its File scope and `depends_on`.
 
-**Symbol grounding**:
-Resolving every function a test calls to an exact indexed symbol instead of a guessed name.
-_Avoid_: test shape
+**File scope**:
+The exact paths and `dir/**` prefixes an Assignment may change.
 
-**Write set**:
-The symbols and effect targets a Task may create or modify.
-
-**Read set**:
-The symbols a Task's code and tests directly reference and the effect targets they depend on.
-
-**Independent**:
-Two Tasks where neither's Write set intersects the other's Read or Write set.
-_Avoid_: non-conflicting, parallelizable
-
-### Tests
-
-**Visible test**:
-A test the implementing Subagent can read and run.
-
-**Hidden test**:
-A test only the Grader can read, used to gate exactly one merge.
-_Avoid_: secret test, private test
-
-**Regression suite**:
-The repository's existing tests plus every spent Hidden test, all of which must stay green.
-_Avoid_: pass-to-pass suite
-
-**Red gate**:
-The check that every new test fails against the Stubs for the intended reason and the Regression suite still passes.
-
-**Flake gate**:
-The check that repeated seeded runs of a test always produce the same result.
-
-**Failure class**:
-The coarse category of a Hidden test failure (assertion, exception, or timeout).
+**Inferred edge**:
+A dependency the planner adds between two Assignments whose File scopes overlap, shown in the approved Contract.
 
 ### Execution
 
-**Subagent**:
-An implementing agent working in its own worktree on exactly one Task.
+**Parent session**:
+The Claude Code session that requested the Task and launches its Delegations.
 
-**Grader**:
-The deterministic process that runs a Task's tests in a sandbox and decides pass or fail.
-_Avoid_: judge, reviewer
+**Delegation**:
+The live execution of one Assignment, across all its attempts.
+_Avoid_: subtask, subagent
 
-**Effect manifest**:
-The side effects a Task's test process is declared to produce: files, database collections, network hosts, environment.
+**Worker run**:
+One attempt of a Delegation: one container, one SDK session, one pinned harness version and epoch.
 
-**Effect baseline**:
-The side effects observed when the unchanged suite runs at the base commit, ignored when checking manifests.
+**Artifact**:
+An immutable, hash-identified snapshot: baseline, frozen worker output, composed tree, scenario, or trace.
 
-**Effect violation**:
-An observed side effect that is absent from both the Task's Effect manifest and the Effect baseline.
+**Stage validation**:
+Validation of a non-final integration against that stage's criteria.
 
-**Scope violation**:
-A change to a symbol outside the Task's Write set.
+**Final validation**:
+Validation of the integration that completes the last Delegation, against the full Contract.
 
-**Integration branch**:
-The branch that collects one Contract's merged Tasks until a human approves it into main.
+**Integration run**:
+The serial composition of one candidate onto the Task's integrated tree, followed by validation.
 
-**Merge queue**:
-The strictly serial line in which graded Tasks are merged into the Integration branch and re-tested one at a time.
+**Integration fence**:
+The per-Task token that makes integration single-writer.
 
-**Eject**:
-To remove a failing Task from the Merge queue and return it to its Subagent.
+### Harness
 
-**Retry budget**:
-The number of Ejects a Task may take before it escalates to the human.
+**Harness version**:
+An immutable executable configuration for context, tools, and validation.
 
-### Memory
+**Active harness pointer**:
+`projects.active_harness_version_id`; the only thing Promotion and Rollback change.
 
-**Rule**:
-A stored, repository-specific instruction about how tests are written, enforced, or exempted.
-
-**Anchor**:
-The indexed symbol or file, plus commit, that a Rule is bound to.
-
-**Stale**:
-The state of a Rule whose Anchor has changed since the Rule was verified.
-
-**Waiver**:
-A Rule that exempts a Task or symbol from a gate, always with an expiry.
-_Avoid_: exception, skip
+**Evolution run**:
+One proposal of a candidate Harness version and its paired evaluation against the active one.
 
 **Promotion**:
-Moving a Rule from candidate to verified, by an automated check or human approval only.
+The conditional pointer flip to an eligible candidate, rejected if the baseline or epoch moved.
+
+**Rollback**:
+Pointing back to a version in `validated_harness_ids`.
+
+**Constraint epoch**:
+A per-Project counter; any approval, pinned run, or eligibility decision from an older epoch is void.
+
+**Revocation**:
+An operator action that increments the Constraint epoch.
+
+### Control
+
+**Job**:
+A durable, leased work item in `jobs` (`plan`, `launch`, `validate`, `integrate`, `evolve`).
+
+**Lease**:
+A Job's time-bounded ownership, renewed by heartbeat and reclaimable after expiry.
+
+**Fence**:
+The token incremented on every claim; completion from an older fence is rejected.
+
+**Command receipt**:
+The stored result of an idempotent HTTP mutation, keyed by actor, operation, and Idempotency-Key.
+
+**Event stream**:
+The gapless, per-Task or per-Project sequence of events, keyed by `stream_id`.
+
+**Operator**:
+The human who approves Contracts, revokes, and rolls back, through the CLI only.
 
 ## Relationships
 
-- A **Contract** has one or more **Tasks** and exactly one **Integration branch**
-- A **Task** has exactly one **Effect manifest**, one **Write set**, one **Read set**, and at least one **Visible test** and one **Hidden test**
-- A **Task** is assigned to exactly one **Subagent**
-- Two **Tasks** that aren't **Independent** are ordered; the later one is dispatched only after the earlier one merges
-- Only the **Grader** reads **Hidden tests**
-- A **Hidden test** gates exactly one merge, then joins the **Regression suite**
-- A **Rule** has one or more **Anchors**, and becomes **Stale** when any Anchor changes
+- A **Project** has many **Tasks**, many **Harness versions**, and exactly one **Active harness pointer**
+- A **Task** has exactly one approved **Contract** and one **Event stream**
+- A **Contract** has one or more **Assignments**; each **Assignment** becomes at most one **Delegation**
+- A **Delegation** has one or more **Worker runs** (at most two attempts) and is accepted only through an **Integration run**
+- A **Delegation** may launch only after every Delegation it depends on is accepted
+- A **Worker run** pins one **Harness version** and one **Constraint epoch**
+- An **Evolution run** compares one candidate **Harness version** with the active one and ends in **Promotion** or rejection
 
 ## Example dialogue
 
-> **Dev:** "Tasks 1 and 2 both call `parseOrder`. Can they run in parallel?"
-> **Domain expert:** "Only if neither has `parseOrder` in its **Write set**. Both reading it is fine; if Task 1 modifies it, they aren't **Independent**, and Task 2 waits for Task 1 to merge."
-> **Dev:** "Task 2 also needs a new field on the order schema. Whose Write set gets it?"
-> **Domain expert:** "Neither. Shared declarations go in the **Interface commit**, so both Tasks only write function bodies."
-> **Dev:** "After Task 1 merges, does its **Hidden test** stay hidden?"
-> **Domain expert:** "No. A **Hidden test** gates one merge, then it's spent and joins the **Regression suite**."
+> **Dev:** "The service worker says it's done. Can routes start?"
+> **Domain expert:** "Routes doesn't depend on service, only on schema. And 'done' means the Worker run is finished, which only means its output is frozen. A dependent can launch only once the Delegation it waits on is accepted, meaning integrated and validated."
+> **Dev:** "We promoted hv_002 while service was running. Does service switch?"
+> **Domain expert:** "No. Its Worker run pinned hv_001. The next Delegation picks up hv_002. If the operator had revoked instead, the epoch would move and service's result would come back inconclusive."
 
 ## Flagged ambiguities
 
-- "deterministic test outcomes vs rough test shapes": resolved. The index provides **Symbol grounding** (which functions a test calls); expected values come only from the **Contract**.
-- "approved and merged into main": resolved. **Tasks** merge into the **Integration branch**; only a human moves it to main.
-- "m2/m3": resolved. Memory holds tests, outcomes, and anchored **Rules**; transcripts contribute only candidate **Rules** drawn from the user's own turns.
+- "task": resolved. A Task is the whole request; one worker's unit is a Delegation.
+- "finished vs accepted": resolved. Finished means output frozen; accepted means integrated and validated.
+- "delegate": resolved. Delegating creates the Delegation and launches its first Worker run in one call.
