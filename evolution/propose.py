@@ -28,13 +28,35 @@ from controller import harness
 
 
 def propose_config(baseline_config: dict, trigger_evidence: dict) -> tuple[dict, str, list[str]]:
-    """Return (candidate_config, hypothesis, changes).
+    """Return (candidate_config, hypothesis, changes), per the baseline's runner."""
+    if baseline_config.get("runner") == "bulk":
+        return _propose_bulk(baseline_config)
+    return _propose_login(baseline_config)
 
-    The escaped failure was a credential leak on an exception path that a
-    success-only harness never exercised or inspected. The proposal exercises
-    the error path and enables the implemented sensitive-log inspector, and
-    includes the logging module in worker context.
-    """
+
+def _propose_bulk(baseline_config: dict) -> tuple[dict, str, list[str]]:
+    """The escaped failure was a partial write: a rejected mixed-owner batch
+    still changed a row. Add the owner-boundary scenario and enable the
+    database invariant + idempotency inspectors."""
+    v = baseline_config.get("validation", {})
+    candidate = {
+        **baseline_config,
+        "validation": {
+            **v,
+            "required_tags": sorted(set(v.get("required_tags", [])) | {"owner_boundary", "idempotency"}),
+            "inspections": sorted(
+                set(v.get("inspections", [])) | {"rows_unchanged_on_rejection", "idempotency_semantics"}),
+        },
+    }
+    hypothesis = ("Mixed-owner batches plus a before/after database invariant catch the "
+                  "partial write that a status-only harness lets through.")
+    changes = ["Add the mixed-owner (owner_boundary) scenario",
+               "Enable the rows_unchanged_on_rejection database invariant",
+               "Enable idempotency_semantics checks"]
+    return candidate, hypothesis, changes
+
+
+def _propose_login(baseline_config: dict) -> tuple[dict, str, list[str]]:
     candidate = {
         **baseline_config,
         "context": {

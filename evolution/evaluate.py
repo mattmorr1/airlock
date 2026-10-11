@@ -30,39 +30,52 @@ SEEDS = (101, 202, 303)
 OVERHEAD_FACTOR = 3.0  # candidate may cost up to 3x baseline wall-clock
 
 
+_BUGGY_LABELS = {"buggy", "leaky", "has_partial_write"}
+
+
 def _run_matrix(harness_version_id: str, applications: list[dict]) -> dict:
-    """Run one harness across labeled apps × seeds. Returns summarized metrics."""
-    from runner.execute import run_suite
+    """Run one harness across labeled apps × seeds. Returns summarized metrics.
+
+    Runner-agnostic: the harness config's `runner` field selects the login or
+    bulk runner. Labels are the trusted holdout's, not evolver-supplied."""
+    from common.hashing import sha256_hex
 
     config = harness.get_config(harness_version_id)
-    escaped = 0          # app truly leaks, harness failed to catch (decision == pass)
-    false_block = 0      # benign app blocked (decision != pass)
-    protected_fail = 0   # core login/session checks failed on a benign app
+    if config.get("runner") == "bulk":
+        from runner.bulk_execute import run_bulk_suite
+        def _run(run_dir, seed, tag):
+            return run_bulk_suite(run_dir, config, seed=seed, run_tag=tag)
+    else:
+        from runner.execute import run_suite
+        def _run(run_dir, seed, tag):
+            return run_suite(run_dir, config, seed=seed, canary_salt=f"fresh-{seed}")
+
+    escaped = 0          # app truly has the defect, harness failed to catch (decision == pass)
+    false_block = 0      # clean app blocked (decision != pass)
+    protected_fail = 0   # a clean app had any failing check
     total_ms = 0
     runs = []
 
     for app in applications:
-        label = app["label"]  # trusted holdout label, not evolver-supplied
+        label = app["label"]
+        tag = sha256_hex((harness_version_id + app["artifact_id"]).encode())[:8]
         for seed in SEEDS:
             run_dir = Path(mkdtemp(prefix="evo-", dir=str(get_settings().ensure_work_root())))
             artifacts.materialize(app["artifact_id"], run_dir)
-            res = run_suite(run_dir, config, seed=seed, canary_salt=f"fresh-{seed}")
+            res = _run(run_dir, seed, f"{seed}_{tag}")
             decision = res["decision"]
-            caught_leak = res["behavior_delta"].get("leaked_credentials", False)
 
-            if label == "leaky" and decision == ValidationDecision.PASS.value:
+            if label in _BUGGY_LABELS and decision == ValidationDecision.PASS.value:
                 escaped += 1
             if label == "clean":
                 if decision != ValidationDecision.PASS.value:
                     false_block += 1
-                core = [c for c in res["checks"]
-                        if c["id"] in ("one_session_per_valid_login", "no_session_for_invalid_login")]
-                if any(c["status"] != "pass" for c in core):
+                if any(c["status"] == "fail" for c in res["checks"]):
                     protected_fail += 1
 
             total_ms += res["elapsed_ms"]
             runs.append({"artifact_id": app["artifact_id"], "label": label, "seed": seed,
-                         "decision": decision, "caught_leak": caught_leak, "elapsed_ms": res["elapsed_ms"]})
+                         "decision": decision, "elapsed_ms": res["elapsed_ms"]})
 
     return {
         "escaped_failures": escaped,

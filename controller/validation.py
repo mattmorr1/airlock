@@ -112,9 +112,11 @@ def execute_validation(validation_run_id: str) -> dict:
     run_dir = Path(mkdtemp(prefix="val-", dir=str(get_settings().ensure_work_root())))
     artifacts.materialize(inputs["candidate_artifact_id"], run_dir)
 
-    result = run_suite(
-        run_dir, config, seed=inputs["seed"], canary_salt=inputs.get("canary_salt")
-    )
+    if config.get("runner") == "bulk":
+        from runner.bulk_execute import run_bulk_suite
+        result = run_bulk_suite(run_dir, config, seed=inputs["seed"], run_tag=validation_run_id)
+    else:
+        result = run_suite(run_dir, config, seed=inputs["seed"], canary_salt=inputs.get("canary_salt"))
 
     col("validation_runs").update_one(
         {"_id": validation_run_id},
