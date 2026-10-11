@@ -10,6 +10,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from api.main import app
 from controller.db import Doc
+from controller.events import Doorbell
 from controller.states import TaskState, transition
 
 pytestmark = pytest.mark.anyio
@@ -26,7 +27,7 @@ async def client(db: AsyncDatabase[Doc], monkeypatch: pytest.MonkeyPatch) -> Asy
     for role, token in TOKENS.items():
         monkeypatch.setenv(f"AIRLOCK_TOKEN_{role.upper()}", token)
     app.state.db = db
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://airlock") as c:
+    async with Doorbell(db) as app.state.doorbell, httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://airlock") as c:
         yield c
 
 
@@ -153,6 +154,7 @@ def deps(d: Dependant) -> list[Dependant]:
 async def test_every_route_and_dependency_is_async() -> None:
     routes = [r for c in iter_route_contexts(app.routes) if isinstance(r := c.original_route, APIRoute)]
     assert {r.path for r in routes} == {"/v1/projects", "/v1/tasks", "/v1/tasks/{task_id}/approve", "/v1/tasks/{task_id}", "/v1/jobs/{job_id}",
-                                       "/v1/tasks/{task_id}/delegations"}
+                                       "/v1/tasks/{task_id}/delegations",
+                                       "/v1/tasks/{task_id}/events", "/v1/projects/{project_id}/events"}
     sync = [(r.path, d.call) for r in routes for d in deps(r.dependant) if d.call and not inspect.iscoroutinefunction(d.call)]
     assert sync == []

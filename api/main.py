@@ -1,9 +1,10 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, Request
+from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pymongo.asynchronous.client_session import AsyncClientSession
@@ -12,10 +13,12 @@ from pymongo.errors import DuplicateKeyError
 
 from api.auth import Cap, Role, require
 from api.errors import ApiError
+from api.events import Bell, router
 from api.idempotency import digest, idempotent
 from api.models import Approve, Approved, ProjectCreate, ProjectCreated, TaskCreate, TaskCreated
 from controller import db as dbmod
 from controller.db import Doc
+from controller.events import Doorbell
 from controller.scheduler import enqueue
 from controller.states import SCHEMA_VERSION, Conflict, JobKind, Prefix, TaskState, append_event, new_id, transition
 
@@ -24,10 +27,12 @@ from controller.states import SCHEMA_VERSION, Conflict, JobKind, Prefix, TaskSta
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     async with dbmod.client() as c:
         app.state.db = dbmod.database(c)
-        yield
+        async with Doorbell(app.state.db) as app.state.doorbell:
+            yield
 
 
 app = FastAPI(title="Airlock", lifespan=lifespan)
+app.include_router(router)
 
 
 def error(status: int, code: str, message: str, retryable: bool = False) -> JSONResponse:
@@ -110,8 +115,14 @@ async def approve_task(task_id: str, body: Approve, db: DB, key: Key, actor: Ann
 
 
 @app.get("/v1/tasks/{task_id}")
-async def get_task(task_id: str, db: DB, _: Annotated[Role, Depends(require(Cap.READ))]) -> Doc:
-    task = await find(db, "tasks", task_id)
+async def get_task(task_id: str, db: DB, bell: Bell, _: Annotated[Role, Depends(require(Cap.READ))],
+                   wait_seconds: Annotated[float, Query(ge=0, le=50)] = 0, after: Annotated[int | None, Query(ge=0)] = None) -> Doc:
+    loop = asyncio.get_running_loop()
+    ev, deadline, task = bell.arm(task_id), loop.time() + wait_seconds, await find(db, "tasks", task_id)
+    seen = task["event_seq"] if after is None else after
+    while task["event_seq"] <= seen and (left := deadline - loop.time()) > 0:
+        await bell.wait(ev, left)
+        ev, task = bell.arm(task_id), await find(db, "tasks", task_id)
     return {"task": task | {"approval_required": task["status"] == TaskState.PLANNED},
             "delegations": await db["delegations"].find({"task_id": task_id}).sort("_id").to_list()}
 
