@@ -54,6 +54,7 @@ async def drive(db, kind, handler) -> dict:
 async def main() -> None:
     async with dbmod.client() as c:
         db = dbmod.database(c)
+        await c.drop_database(db.name)  # idempotent on reruns
         await setup(db)
         pid, tid = new_id(Prefix.PROJECT), new_id(Prefix.TASK)
         did, wid = new_id(Prefix.DELEGATION), new_id(Prefix.WORKER_RUN)

@@ -27,7 +27,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from controller.db import Doc
 from controller.policies import accept_validation_guarded, promote
-from controller.scheduler import complete, enqueue, on_validation_pass
+from controller.scheduler import complete, enqueue, on_integration_pass, on_validation_pass
 from controller.states import (
     SCHEMA_VERSION,
     DelegationState,
@@ -160,8 +160,9 @@ def _integrate_sync(dele: Doc, base_art: str, candidate_art: str, hv_id: str) ->
     ancestor = artifacts.get_tree(cdoc["base_artifact_id"]) if cdoc.get("base_artifact_id") else base_tree
     combined, conflicts = compose(base_tree, [{"artifact_id": candidate_art, "ancestor_tree": ancestor,
                                                "cand_tree": artifacts.get_tree(candidate_art)}])
+    empty = {"combined_artifact_id": None, "decision": None, "checks": [], "behavior_delta": {}, "coverage": {}}
     if conflicts:
-        return {"conflicts": conflicts, "combined_artifact_id": None, "decision": None}
+        return {"conflicts": conflicts, **empty}
     art = artifacts.put_tree(combined, kind="integrated", project_id=dele["project_id"], task_id=dele["task_id"],
                              base_artifact_id=base_art, changed_files=diff_trees(base_tree, combined)["changed_files"],
                              created_by="integrator_01")
@@ -170,7 +171,8 @@ def _integrate_sync(dele: Doc, base_art: str, candidate_art: str, hv_id: str) ->
     config = harness.get_config(hv_id)
     res = run_bulk_suite(d, config, seed=103, run_tag="int" + art["_id"][-6:]) if config.get("runner") == "bulk" \
         else run_suite(d, config, seed=103)
-    return {"conflicts": [], "combined_artifact_id": art["_id"], "decision": res["decision"]}
+    return {"conflicts": [], "combined_artifact_id": art["_id"], "decision": res["decision"],
+            "checks": res["checks"], "behavior_delta": res["behavior_delta"], "coverage": res["coverage"]}
 
 
 async def handle_integrate(db: AsyncDatabase[Doc], job: Doc) -> None:
@@ -180,34 +182,35 @@ async def handle_integrate(db: AsyncDatabase[Doc], job: Doc) -> None:
     wr = await db["worker_runs"].find_one({"_id": dele["active_worker_run_id"]})
     res = await asyncio.to_thread(_integrate_sync, dele, dele["resolved_input_artifact_id"],
                                   wr["output_artifact_id"], wr["harness_version_id"])
-    int_id, now = new_id(Prefix.INTEGRATION_RUN), datetime.now(UTC)
+    now = datetime.now(UTC)
+
+    # Persist the combined validation run (non-state-machine doc) before completion.
+    val_id = None
+    if res["combined_artifact_id"] is not None:
+        val_id = new_id(Prefix.VALIDATION_RUN)
+        await db["validation_runs"].insert_one({
+            "_id": val_id, "schema_version": SCHEMA_VERSION, "project_id": dele["project_id"], "task_id": dele["task_id"],
+            "kind": "integration", "status": "completed", "decision": res["decision"], "checks": res["checks"],
+            "behavior_delta": res["behavior_delta"], "coverage": res["coverage"],
+            "inputs": {"candidate_artifact_id": res["combined_artifact_id"], "harness_version_id": wr["harness_version_id"]},
+            "created_at": now})
 
     async def apply(s) -> None:
         d = await db["delegations"].find_one({"_id": dele["_id"]}, session=s)
-        await db["integration_runs"].insert_one({
-            "_id": int_id, "schema_version": SCHEMA_VERSION, "project_id": dele["project_id"], "task_id": dele["task_id"],
-            "status": IntegrationRunState.COMPOSING, "revision": 1, "integration_fence": p["integration_seq"],
-            "result_artifact_id": res["combined_artifact_id"], "conflicts": res["conflicts"], "created_at": now}, session=s)
-        if res["conflicts"]:
-            await transition(s, db["integration_runs"], int_id, 1, IntegrationRunState.CONFLICTED)
-            await transition(s, db["delegations"], dele["_id"], d["revision"], DelegationState.REPAIR_REQUIRED, {"reason": "conflict"})
+        if res["conflicts"] or res["decision"] != ValidationDecision.PASS.value:
+            status = IntegrationRunState.CONFLICTED if res["conflicts"] else IntegrationRunState.FAILED
+            await db["integration_runs"].insert_one({
+                "_id": new_id(Prefix.INTEGRATION_RUN), "schema_version": SCHEMA_VERSION, "project_id": dele["project_id"],
+                "task_id": dele["task_id"], "delegation_id": dele["_id"], "status": status, "revision": 1,
+                "integration_fence": p["integration_seq"], "result_artifact_id": res["combined_artifact_id"],
+                "conflicts": res["conflicts"], "validation_run_id": val_id, "created_at": now}, session=s)
+            await transition(s, db["delegations"], dele["_id"], d["revision"], DelegationState.REPAIR_REQUIRED,
+                             {"reason": "conflict" if res["conflicts"] else "combined_validation"})
             return
-        await transition(s, db["integration_runs"], int_id, 1, IntegrationRunState.VALIDATING)
-        if res["decision"] != ValidationDecision.PASS:
-            await transition(s, db["integration_runs"], int_id, 2, IntegrationRunState.FAILED)
-            await transition(s, db["delegations"], dele["_id"], d["revision"], DelegationState.REPAIR_REQUIRED, {"reason": "combined_validation"})
-            return
-        await transition(s, db["integration_runs"], int_id, 2, IntegrationRunState.ACCEPTED)
-        await transition(s, db["delegations"], dele["_id"], d["revision"], DelegationState.ACCEPTED,
-                         {"accepted_artifact_id": res["combined_artifact_id"]})
-        if p["final"]:
-            task = await db["tasks"].find_one({"_id": dele["task_id"]}, session=s)
-            await transition(s, db["tasks"], dele["task_id"], task["revision"], TaskState.COMPLETED,
-                             {"final_artifact_id": res["combined_artifact_id"]})
-        await append_event(s, dele["task_id"], db["tasks"], "delegation.accepted", "integrator",
-                           {"delegation_id": dele["_id"], "integration_run_id": int_id, "final": p["final"]})
+        # A's helper: accept the integration + delegation and complete the task if this integration is final.
+        await on_integration_pass(s, db, d, p["integration_seq"], res["combined_artifact_id"], val_id)
 
-    await complete(db, job["_id"], owner, fence, apply, result_ref=int_id)
+    await complete(db, job["_id"], owner, fence, apply, result_ref=val_id)
 
 
 # --------------------------------------------------------------------------- #
