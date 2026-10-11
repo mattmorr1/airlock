@@ -51,6 +51,7 @@ MUTED = (160, 171, 184)
 FACE = {"content": "(^_^)", "watching": "(o_o)", "waiting": "(-_-)", "alarm": "(O_O)!", "unwell": "(x_x)"}
 DRIFT = [0, 0, 1, 2, 2, 1, 0, 0, 0, 1]  # columns, one step per 6s: a slow wander that never jumps
 DRIFT_MAX, UP, DN = max(DRIFT), "\u2580", "\u2584"
+BLANK = "\u2800"  # braille blank: Claude Code strips leading spaces per statusline row, which would shear the sprite
 WORD = {("content", "idle"): "airlock idle", ("content", "done"): "task done", ("watching", "merging"): "merging", ("watching", "planning"): "planning",
         ("waiting", "approve"): "waiting on you", ("waiting", "delegate"): "ready to delegate", ("alarm", "repair"): "needs repair",
         ("alarm", "failed"): "failed", ("alarm", "lease"): "lease expired", ("unwell", "stale"): "api unreachable", ("unwell", "offline"): "api unreachable",
@@ -79,12 +80,12 @@ def fg(rgb: tuple[int, int, int]) -> str:
 def halfblocks(grid: list[str], shift: int) -> list[str]:
     def cell(top: str, bot: str) -> str:
         if top == "." and bot == ".":
-            return " "
+            return BLANK
         if top == ".":
             return f"{fg(PAL[bot])}{DN}\x1b[0m"
         b = PAL.get(bot)
         return fg(PAL[top]) + (f"\x1b[48;2;{b[0]};{b[1]};{b[2]}m" if b else "") + UP + "\x1b[0m"
-    return [" " * shift + "".join(cell(a, b) for a, b in zip(grid[r], grid[r + 1], strict=True)) + " " * (DRIFT_MAX - shift)
+    return [BLANK * shift + "".join(cell(a, b) for a, b in zip(grid[r], grid[r + 1], strict=True)) + BLANK * (DRIFT_MAX - shift)
             for r in range(0, len(grid), 2)]
 
 

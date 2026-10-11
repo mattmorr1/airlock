@@ -184,5 +184,6 @@ def test_idle_hatch_moves_a_little_but_rarely() -> None:
     poses: list[list[str]] = [h.halfblocks(h.frame_at("idle", t * 1000), h.DRIFT[(t // 6) % len(h.DRIFT)]) for t in range(60)]
     changes = sum(a != b for a, b in itertools.pairwise(poses))
     assert 0 < changes <= 30 and {len(plain(p).splitlines()) for p in poses} == {5}
+    assert not any(row[:1].isspace() for p in poses for row in p), "Claude Code strips leading spaces, shearing the sprite"
     assert all(len(f) == 10 and len(r) == 12 and set(r) <= {*h.PAL, "."} for _, frames in h.STATES.values() for f in frames for r in f)
     assert all(len(holds) == len(frames) for holds, frames in h.STATES.values())
