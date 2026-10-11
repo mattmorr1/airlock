@@ -1,0 +1,13 @@
+{
+  "name": "airlock",
+  "version": "0.1.0",
+  "description": "Airlock control plane: plan a task, delegate approved assignments to isolated workers, and gate the parent session while it runs",
+  "author": {"name": "Matt Morris"},
+  "mcpServers": {
+    "airlock": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--project", "${CLAUDE_PLUGIN_ROOT}/..", "python", "${CLAUDE_PLUGIN_ROOT}/../bridge/server.py"],
+      "env": {"AIRLOCK_URL": "${AIRLOCK_URL:-http://127.0.0.1:8000}", "AIRLOCK_TOKEN_BRIDGE": "${AIRLOCK_TOKEN_BRIDGE}"}
+    }
+  }
+}
