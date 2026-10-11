@@ -15,6 +15,7 @@ dependencies = [
     { name = "claude-agent-sdk" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "mcp" },
     { name = "pydantic" },
     { name = "pymongo" },
 ]
@@ -33,6 +34,7 @@ requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.2.165" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "mcp", specifier = ">=2.3.0" },
     { name = "pydantic" },
     { name = "pymongo", specifier = ">=4.13" },
 ]
