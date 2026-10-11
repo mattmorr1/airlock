@@ -13,11 +13,13 @@ from typing import Any
 
 TIMEOUT = 0.3
 HOME = Path.home() / ".airlock"
-PAL = {"W": "#F2F5FA", "G": "#AEBBCD", "N": "#1C2B5A", "V": "#2E5BD8", "E": "#EAF3FF", "L": "#9CC2FF", "B": "#3D7BF7", "A": "#34D399", "R": "#F43F5E",
-       "Y": "#FBBF24"}
-HEAD, VISOR, COLLAR, LEGS = [".....WW.....", "..WWWWWWWG..", ".WWLVVVVVWG."], ".WWNVVVVNWG.", "..GBBBBBBG..", ["..GWWWWWWG..", "...BB..BB..."]
-EYES = {"open": [".WVVEVVEVNG."] * 2, "shut": [".WVVVVVVVNG.", ".WVVEEVEENG."], "right": [".WVVVEVVENG."] * 2, "left": [".WVEVVEVVNG."] * 2,
-        "wide": [".WVEEVVEENG."] * 2, "droop": [".WVVVVVVVNG.", ".WVEEVVEENG."]}
+PAL = {"W": "#F2F5FA", "G": "#AEBBCD", "D": "#23263A", "S": "#4A5068", "B": "#3D7BF7", "E": "#FFFFFF", "C": "#38BDF8", "P": "#F9A8D4",
+       "A": "#34D399", "L": "#60A5FA", "Y": "#FBBF24", "X": "#F43F5E"}
+# 9x8 chibi astronaut: helmet with a 3-row visor (sparkle over iris eyes, blush below), blue zip, cuffs and boot stripes; row 5 col 4 is the chest light.
+BASE = ["..WWWWG..", ".WWWWWWG.", ".WDDDDDG.", ".WDDDDDG.", ".WDDDDDG.", ".WWW?WWG.", ".BWWBWGB.", "..BW.WB.."]
+LOOK = {"center": (3, 5), "right": (4, 6), "left": (2, 4)}
+WAVE = {2: "G", 3: "B"}  # raised hand at column 0 beside the visor
+ARMS_UP = {0: "G.WWWWG.G", 1: "BWWWWWWGB", 5: "..WW?WWG.", 6: "..WWBWG.."}
 TONE = {"content": "#34D399", "watching": "#60A5FA", "waiting": "#FBBF24", "alarm": "#F43F5E", "unwell": "#A3E635"}
 FACE = {"content": "(^_^)", "watching": "(o_o)", "waiting": "(-_-)", "alarm": "(O_O)!", "unwell": "(x_x)"}
 DRIFT = [0, 0, 1, 2, 2, 1, 0, 0, 0, 1]  # columns, one step per 6s: a slow wander that never jumps
@@ -32,26 +34,33 @@ def word(d: dict[str, Any]) -> str:
     return WORD.get((d["mood"], d["reason"])) or str(d["mood"])
 
 
-def frame(eyes: str, chest: str, **rows: str) -> list[str]:
-    grid = [*HEAD, *EYES[eyes], VISOR, COLLAR, rows.pop("body", f".WGWW{chest}{chest}WWGW."), *LEGS]
-    for i, row in rows.items():
-        grid[int(i[1:])] = row
-    return grid
+def frame(chest: str, eyes: str = "open", look: str = "center", wave: bool = False, arms_up: bool = False) -> list[str]:
+    g = [list(r.replace("?", chest)) for r in (BASE if not arms_up else [ARMS_UP.get(i, r) for i, r in enumerate(BASE)])]
+    if eyes == "dizzy":
+        g[2:5] = [[("S" if c == "D" else c) for c in r] for r in g[2:5]]
+    for c in LOOK[look]:
+        if eyes in ("open", "shock"):
+            g[2][c], g[3][c] = "E", "E" if eyes == "shock" else "C"
+        else:
+            g[3][c] = {"shut": "C", "dizzy": "G"}[eyes]
+    if eyes in ("open", "shut"):
+        g[4][2] = g[4][6] = "P"
+    for row, ch in (WAVE.items() if wave else ()):
+        g[row][0] = ch
+    return ["".join(r) for r in g]
 
 
 def pose(mood: str, t: int) -> list[str]:
-    """Mostly still: idle moods blink every 7s and wave once a minute; busy moods animate gently, alarm is meant to grab attention."""
+    """Mostly still: content blinks every 7s and waves once a minute; busy moods animate gently, alarm is meant to grab attention."""
     if mood == "content":
-        if t % 60 in (30, 31):
-            return frame("open", "A", r5=".WWNVVVVNWGW", body=".WGWWAAWWG..")
-        return frame("shut" if t % 7 == 0 else "open", "A")
+        return frame("A", "shut" if t % 7 == 0 else "open", wave=t % 60 in (30, 31))
     if mood == "watching":
-        return frame(("right", "open", "left", "open")[(t // 2) % 4], "L" if t % 4 < 2 else "B")
+        return frame("L", look=("center", "right", "center", "left")[(t // 2) % 4])
     if mood == "waiting":
-        return frame("shut" if t % 9 == 0 else "open", "Y" if (t // 2) % 2 else "W")
+        return frame("Y" if (t // 2) % 2 else "W", "open" if t % 9 == 0 else "shut")
     if mood == "alarm":
-        return frame("wide", "R", r1="W.WWWWWWWG.W", r2="WWWLVVVVVWGW", body="..GWWRRWWG..") if t % 2 else frame("wide", "W", body=".WGWWRRWWGW.")
-    return frame("droop", "G" if (t // 3) % 2 else "N")
+        return frame("X", "shock", arms_up=bool(t % 2))
+    return frame("G", "dizzy")
 
 
 def c256(hex_: str) -> int:
@@ -97,10 +106,11 @@ def stats(d: dict[str, Any]) -> list[str]:
         busy = [f"{p[k]} {k.replace('_required', '')}" for k in ("integrating", "validating", "running", "repair_required") if p.get(k)]
         extra = [f"ready: {', '.join(p['ready'])}"] * bool(p["ready"]) + [f"{k} try {n}/2" for k, n in p["retries"].items()]
         lines.append(" · ".join([f"merged {p['accepted']}/{p['total']} {bar(p['accepted'], p['total'])}", *busy, *extra]))
-    lines.append(f"jobs {j['running']} running · {j['queued']} queued · " + (f"{j['expired']} lease expired" if j["expired"] else "leases ok"))
-    last = f" · last {d['last']['type']} {age(d['last']['age_s'])} ago" if d.get("last") else ""
-    lines.append(f"harness {h['version']} gen {h['generation']} · epoch {h['epoch']}{last}")
-    lines.append(f"today {today['done']} done · {today['merged']} merged · {today['failed']} failed · {today['promoted']} promoted")
+    leases = f"{j['expired']} lease expired" if j["expired"] else "leases ok"
+    harness = f"harness {h['version']} gen {h['generation']} \u00b7 epoch {h['epoch']}"
+    lines.append(f"jobs {j['running']} running \u00b7 {j['queued']} queued \u00b7 {leases} \u00b7 {harness}")
+    last = f" \u00b7 last {d['last']['type']} {age(d['last']['age_s'])} ago" if d.get("last") else ""
+    lines.append(f"today {today['done']} done \u00b7 {today['merged']} merged \u00b7 {today['failed']} failed \u00b7 {today['promoted']} promoted{last}")
     return lines
 
 

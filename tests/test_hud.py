@@ -152,10 +152,10 @@ def plain(lines: list[str]) -> str:
     return "\n".join(re.sub(r"\x1b\[[0-9;]*m", "", s) for s in lines)
 
 
-def test_script_prints_upstream_then_five_line_sprite_and_caches(stub: str, tmp_path: Path) -> None:
+def test_script_prints_upstream_then_four_line_sprite_and_caches(stub: str, tmp_path: Path) -> None:
     Stub.reply = WATCHING
     lines = run(stub, tmp_path)
-    assert lines[0] == "upstream:sess_abc" and len(lines) == 6
+    assert lines[0] == "upstream:sess_abc" and len(lines) == 5
     assert "\x1b[38;5;" in lines[1] and "▀" in lines[1]
     text = plain(lines)
     assert "merging · task_abc" in text and "merged 1/3" in text and "harness hv_002 gen 2" in text and "leases ok" in text
