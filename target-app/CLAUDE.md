@@ -1,0 +1,1 @@
+This repository is registered with Airlock. Route every code change through the `airlock:run` skill rather than editing files directly: it plans the change as a contract with executable acceptance checks, the operator approves it, and isolated workers implement it.

@@ -71,7 +71,7 @@ async def pre_tool_use(body: HookInput, db: DB, _: Hook) -> Doc:
 def ready_keys(task: Doc, delegations: list[Doc]) -> list[str]:
     """Contract assignments not yet delegated whose dependencies are all accepted."""
     seen, accepted = {d["assignment_key"] for d in delegations}, {d["assignment_key"] for d in delegations if d["status"] == DelegationState.ACCEPTED}
-    return [a["key"] for a in task["contract"]["assignments"] if a["key"] not in seen and set(a["depends_on"]) <= accepted]
+    return [a["key"] for a in (task.get("contract") or {}).get("assignments", []) if a["key"] not in seen and set(a["depends_on"]) <= accepted]
 
 
 def next_step(task: Doc, delegations: list[Doc]) -> str:
@@ -90,10 +90,12 @@ async def lifecycle(body: HookInput, db: DB, _: Hook) -> Doc:
         return {"active": False}
     tid, status = task["_id"], task["status"]
     if status == TaskState.PLANNED:
-        return {"active": False, "systemMessage": f"Airlock task {tid} awaiting operator: ! airlock -y approve {tid}"}
+        return {"active": False, "systemMessage": f"Airlock task {tid} awaiting operator: review with ! airlock show {tid}, then ! airlock -y approve {tid}"}
     if status == TaskState.DRAFT:
         return {"active": False, "systemMessage": f"Airlock task {tid} is still being planned; check back with airlock_status({tid!r}, 50)"}
     delegations = await db["delegations"].find({"task_id": tid}, {"assignment_key": 1, "status": 1}).to_list()
+    if not ready_keys(task, delegations) and not any(d["status"] in (*LIVE, DelegationState.REPAIR_REQUIRED) for d in delegations):
+        return {"active": False, "systemMessage": f"Airlock task {tid} is {status} with nothing launchable or in flight; cancel it: ! airlock -y cancel {tid}"}
     return {"active": True, "decision": "block", "reason": f"Airlock task {tid} is {status}. Next: {next_step(task, delegations)}"}
 
 

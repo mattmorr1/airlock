@@ -20,6 +20,7 @@ class Cap(StrEnum):
     PROJECT_CREATE = "project:create"
     TASK_CREATE = "task:create"
     TASK_APPROVE = "task:approve"
+    TASK_CANCEL = "task:cancel"
     DELEGATE = "task:delegate"
     ROLLBACK = "project:rollback"
     REVOKE = "project:revoke"
@@ -28,7 +29,7 @@ class Cap(StrEnum):
 
 
 CAPS: dict[Role, frozenset[Cap]] = {
-    Role.OPERATOR: frozenset({Cap.PROJECT_CREATE, Cap.TASK_APPROVE, Cap.ROLLBACK, Cap.REVOKE, Cap.READ}),
+    Role.OPERATOR: frozenset({Cap.PROJECT_CREATE, Cap.TASK_APPROVE, Cap.TASK_CANCEL, Cap.ROLLBACK, Cap.REVOKE, Cap.READ}),
     Role.BRIDGE: frozenset({Cap.TASK_CREATE, Cap.DELEGATE, Cap.READ}),
     Role.HOOK: frozenset({Cap.HOOK}),
     Role.READER: frozenset({Cap.READ}),

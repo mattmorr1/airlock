@@ -72,6 +72,11 @@ def inspect_idempotency_semantics(obs: Observations) -> list[Check]:
     return checks
 
 
+def inspect_contract_checks(obs: Observations) -> list[Check]:
+    """The approved contract's own acceptance checks; always applied, outside the harness's selectable registry."""
+    return [{"id": f"contract_{c['id']}", "status": c["status"], "detail": c["detail"]} for c in obs.get("contract", [])]
+
+
 INSPECTORS: dict[str, Callable[[Observations], list[Check]]] = {
     "http_responses": inspect_http_responses,
     "rows_unchanged_on_rejection": inspect_rows_unchanged_on_rejection,

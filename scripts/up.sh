@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 [ -f .env ] || { echo "copy .env.example to .env and set AIRLOCK_MONGO_URI" >&2; exit 1; }
 
 export AIRLOCK_EXECUTION_MODE=local AIRLOCK_HUD_FOLLOW_LATEST=1
+export AIRLOCK_ROOTS="${AIRLOCK_ROOTS:-{\"repo_full\": \"$PWD/target-app\"}}"  # cwd -> project for /airlock:run
 export TARGET_MONGO_URI="${TARGET_MONGO_URI:-mongodb://127.0.0.1:27018/?replicaSet=rs0}"
 export AIRLOCK_TOKEN_OPERATOR="${AIRLOCK_TOKEN_OPERATOR:-op-secret}" AIRLOCK_TOKEN_BRIDGE="${AIRLOCK_TOKEN_BRIDGE:-bridge-secret}"
 export AIRLOCK_TOKEN_HOOK="${AIRLOCK_TOKEN_HOOK:-hook-secret}" AIRLOCK_TOKEN_READER="${AIRLOCK_TOKEN_READER:-reader-secret}"

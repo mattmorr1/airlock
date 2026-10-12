@@ -91,6 +91,12 @@ def task_card(t: Doc, dels: list[Doc], wrs: list[Doc], vals: dict[str, Doc], int
                         f'<code>{esc(i.get("result_artifact_id"))}</code> · fence {esc(i.get("integration_fence"))}</span></div>'
                         f'{checks(vals.get(i.get("result_artifact_id") or ""))}</div>')
         rows.append("</div>")
+    if c := t.get("contract"):
+        lists = {"constraints": c.get("constraints", []), "acceptance": c.get("acceptance", []),
+                 "generated checks": [f"{x['id']}: {x['description']}" for x in [*c.get("checks", []), *c.get("tests", [])]]}
+        items = "".join(f'<div class="mut">{esc(h)}</div><ul>{"".join(f"<li>{esc(i)}</li>" for i in v)}</ul>' for h, v in lists.items() if v)
+        rows.insert(0, f'<details{" open" if t["status"] == "planned" else ""}><summary>contract <code class="mut">{esc(t.get("contract_digest"))}</code>'
+                       f'</summary>{items}</details>')
     return (f'<div class="card"><div class="row"><b>{esc(t["request"])}</b> <span class="mut">{esc(t["_id"])} · {hms(t.get("created_at"))}</span></div>'
             f'<div class="stepper">{stepper}</div>{"".join(rows) or "<div class=mut>planning…</div>"}'
             f'{"<div class=mut>final artifact <code>" + esc(t["final_artifact_id"]) + "</code></div>" if t.get("final_artifact_id") else ""}</div>')

@@ -233,6 +233,8 @@ async def test_repair_is_attempt_two_on_new_harness_and_third_attempt_fails_dele
     d = await get(db, "delegations", did)
     assert (d["status"], d["attempt"]) == ("failed", 2)
     assert await db["worker_runs"].count_documents({"delegation_id": did}) == 2
+    assert (await get(db, "tasks", tid))["status"] == "failed"
+    assert await db["events"].count_documents({"stream_id": tid, "type": "task.failed"}) == 1
 
 
 async def test_epoch_bump_requires_reapproval_and_guards(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
@@ -285,7 +287,7 @@ async def test_exhausted_job_fails_its_owner_in_the_same_transaction(client: htt
     await lease(db, run["job_id"], attempts=3)
     assert await fail(db, run["job_id"], "w", 1, "docker down") == JobStatus.FAILED
     w, d = await get(db, "worker_runs", run["worker_run_id"]), await get(db, "delegations", run["delegation_id"])
-    assert (w["status"], d["status"]) == ("failed", "failed")
+    assert (w["status"], d["status"], (await get(db, "tasks", tid))["status"]) == ("failed", "failed", "failed")
     r = await client.post("/v1/tasks", headers=auth("bridge", "exhaust-2"), json={
         "project_id": proj, "parent_session_id": "claude_parent_01", "request": "Implement login", "base_artifact_id": "art_base_01"})
     plan_task, plan_job = r.json()["task_id"], r.json()["job_id"]
@@ -325,3 +327,29 @@ async def test_promotion_pins_next_delegation_while_running_one_keeps_its_versio
     assert (r.status_code, r.json()["harness_version_id"]) == (202, hv2)
     pins = {w["_id"]: (w["status"], w["harness_version_id"]) for w in await db["worker_runs"].find({"task_id": tid}).to_list()}
     assert pins == {schema["worker_run_id"]: ("running", hv1), r.json()["worker_run_id"]: ("queued", hv2)}
+
+
+async def test_operator_cancel_closes_task_and_unfinished_work_once(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
+    tid, _, _ = await approved_task(client, db, "cancel")
+    run = (await delegate(client, tid, "schema", "cancel-1")).json()
+    assert (await client.post(f"/v1/tasks/{tid}/cancel", headers=auth("bridge", "cancel-2"))).status_code == 403
+    r = await client.post(f"/v1/tasks/{tid}/cancel", headers=auth("operator", "cancel-3"))
+    assert r.status_code == 200, r.text
+    statuses = [(await get(db, c, i))["status"] for c, i in (("tasks", tid), ("delegations", run["delegation_id"]), ("worker_runs", run["worker_run_id"]))]
+    assert statuses == ["cancelled", "cancelled", "cancelled"]
+    r = await client.post(f"/v1/tasks/{tid}/cancel", headers=auth("operator", "cancel-4"))
+    assert (r.status_code, r.json()["error"]["code"]) == (409, "STALE_REVISION")
+
+
+def test_regression_gate_passes_progress_and_blocks_regressions() -> None:
+    from controller.handlers import regression_gate
+
+    def run(decision: str, partial: bool = False, **checks: str) -> Doc:
+        return {"decision": decision, "observer_ok": True, "behavior_delta": {"partial_write": partial},
+                "checks": [{"id": k, "status": v} for k, v in checks.items()]}
+    ref = run("repair_required", http_bulk="fail", rows_unchanged="pass")
+    assert regression_gate(run("repair_required", http_bulk="fail", rows_unchanged="pass"), ref) == "pass"
+    assert regression_gate(run("repair_required", http_bulk="fail", rows_unchanged="fail"), ref) == "repair_required"
+    assert regression_gate(run("repair_required", True, http_bulk="fail", rows_unchanged="pass"), ref) == "repair_required"
+    assert regression_gate(run("inconclusive", http_bulk="error", rows_unchanged="pass"), ref) == "inconclusive"
+    assert regression_gate(run("repair_required", http_bulk="fail", rows_unchanged="pass"), None) == "repair_required"

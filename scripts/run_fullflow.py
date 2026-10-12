@@ -122,7 +122,7 @@ async def main() -> None:
               f"| baseline escaped={m['baseline']['escaped_failures']} candidate escaped={m['candidate']['escaped_failures']} "
               f"| active harness flipped v1->v2: {proj['active_harness_version_id'] == e['candidate_harness_version_id']}")
         print(f"keep exploring in the UI: {UI}")
-        print(f"act 2, same project with the evolved harness: /airlock:run {PID} {base['_id']} Implement atomic bulk item updates with idempotency")
+        print("act 2, same project with the evolved harness: cd target-app && claude --plugin-dir ../plugin, then /airlock:run Implement atomic bulk item updates with idempotency")
 
 
 if __name__ == "__main__":

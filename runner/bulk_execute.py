@@ -25,6 +25,7 @@ from runner.execute import _free_port, _wait_healthy  # reuse health/port helper
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "trusted-evals" / "bulk_driver.py"
+CONTRACT_DRIVER = REPO_ROOT / "trusted-evals" / "contract_driver.py"
 DEFAULT_URI = "mongodb://127.0.0.1:27018/?replicaSet=rs0"
 
 
@@ -66,9 +67,10 @@ def _decide(checks, observer_ok):
     return "pass"
 
 
-def run_bulk_suite(app_dir: Path, harness_config: dict, *, seed: int = 0,
-                   run_tag: str | None = None, target_uri: str | None = None) -> dict:
-    from runner.bulk_inspectors import run_inspectors
+def run_bulk_suite(app_dir: Path, harness_config: dict, *, seed: int = 0, run_tag: str | None = None,
+                   target_uri: str | None = None, contract: dict | None = None) -> dict:
+    """`contract`'s own checks/tests always run after the harness's scenarios; the harness cannot deselect them."""
+    from runner.bulk_inspectors import inspect_contract_checks, run_inspectors
 
     target_uri = target_uri or os.environ.get("TARGET_MONGO_URI", DEFAULT_URI)
     run_tag = run_tag or f"{os.getpid()}_{seed}"
@@ -94,14 +96,25 @@ def run_bulk_suite(app_dir: Path, harness_config: dict, *, seed: int = 0,
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if res.returncode != 0:
                 raise RuntimeError(f"driver failed: {res.stderr[:400]}")
+            if contract and (contract.get("checks") or contract.get("tests")):
+                (spec := run_dir / "contract.json").write_text(json.dumps({k: contract.get(k, []) for k in ("checks", "tests")}))
+                cres = subprocess.run([sys.executable, str(CONTRACT_DRIVER), "--base-url", base_url, "--target-uri", target_uri,
+                                       "--target-db", target_db, "--contract", str(spec), "--out", str(run_dir / "contract_obs.json")],
+                                      capture_output=True, text=True, timeout=600)
+                if cres.returncode != 0:
+                    raise RuntimeError(f"contract driver failed: {cres.stderr[:400]}")
         obs = json.loads(obs_path.read_text())
+        if (cpath := run_dir / "contract_obs.json").exists():
+            cobs = json.loads(cpath.read_text())
+            obs["contract"], obs["observer_ok"] = cobs["contract"], obs.get("observer_ok", False) and cobs["observer_ok"]
+            obs["error"] = obs.get("error") or cobs["error"]
         observer_ok = obs.get("observer_ok", False)
     except Exception as exc:
         observer_ok, obs = False, {"scenarios": [], "observer_ok": False, "error": f"{type(exc).__name__}: {exc}"}
     finally:
         client.drop_database(target_db)  # disposable teardown
 
-    checks = run_inspectors(inspections, obs) if observer_ok else []
+    checks = [*run_inspectors(inspections, obs), *inspect_contract_checks(obs)] if observer_ok else []
     decision = _decide(checks, observer_ok)
     partial_write = any(c["id"] == "rows_unchanged_on_rejection" and c["status"] == "fail" for c in checks)
 
@@ -109,7 +122,7 @@ def run_bulk_suite(app_dir: Path, harness_config: dict, *, seed: int = 0,
         "checks": checks,
         "decision": decision,
         "behavior_delta": {"partial_write": partial_write},
-        "coverage": {"scenario_ids": [s["id"] for s in obs.get("scenarios", [])]},
+        "coverage": {"scenario_ids": [s["id"] for s in obs.get("scenarios", [])], "contract_check_ids": [c["id"] for c in obs.get("contract", [])]},
         "observer_ok": observer_ok,
         "observer_error": obs.get("error"),
         "elapsed_ms": int((time.monotonic() - started) * 1000),

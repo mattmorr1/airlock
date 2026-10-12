@@ -74,7 +74,8 @@ COLLECTIONS: dict[str, tuple[Doc, list[IndexModel]]] = {
     ),
     "validation_runs": (
         schema(P.VALIDATION_RUN, {"project_id": PROJ, "created_at": DATE}, {"decision": enum(ValidationDecision, None), "input_digest": STR}),
-        [ix("task_id", "created_at"), ix("input_digest", "status")],
+        [ix("task_id", "created_at"), ix("input_digest", "status"),
+         ix("inputs.cache_key", unique=True, partialFilterExpression=exists("inputs.cache_key"))],
     ),
     "harness_versions": (
         schema(P.HARNESS_VERSION, {"project_id": PROJ, "version": INT, "created_at": DATE}),

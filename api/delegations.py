@@ -10,7 +10,7 @@ from api.idempotency import digest, idempotent
 from api.main import DB, Key, find
 from api.models import Name, Strict
 from controller.db import Doc
-from controller.scheduler import enqueue
+from controller.scheduler import close_task, enqueue
 from controller.states import SCHEMA_VERSION, IntegrationRunState, JobKind, Prefix, TaskState, WorkerRunState, append_event, new_id, transition
 from controller.states import DelegationState as DS
 
@@ -40,7 +40,9 @@ async def delegate(task_id: str, body: Delegate, db: DB, key: Key, actor: Annota
         if prior is not None and prior["attempt"] >= MAX_ATTEMPTS:
             await transition(s, db["delegations"], prior["_id"], prior["revision"], DS.FAILED)
             await append_event(s, task_id, db["tasks"], "delegation.failed", actor, {"delegation_id": prior["_id"], "reason": "attempts_exhausted"})
-            return {"error": {"code": "ATTEMPTS_EXHAUSTED", "message": f"delegation {prior['_id']} used {prior['attempt']} attempts and is now failed"}}
+            await close_task(s, db, task_id, TaskState.FAILED, actor, {"reason": "attempts_exhausted", "delegation_id": prior["_id"]})
+            return {"error": {"code": "ATTEMPTS_EXHAUSTED",
+                              "message": f"delegation {prior['_id']} used {prior['attempt']} attempts and is now failed; task {task_id} failed"}}
         deps = await db["delegations"].find({"task_id": task_id, "assignment_key": {"$in": a["depends_on"]}, "status": DS.ACCEPTED},
                                             {"assignment_key": 1}, session=s).to_list()
         if unmet := sorted(set(a["depends_on"]) - {d["assignment_key"] for d in deps}):

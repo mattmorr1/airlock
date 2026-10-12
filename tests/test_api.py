@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 import pytest
@@ -193,9 +194,38 @@ def deps(d: Dependant) -> list[Dependant]:
 async def test_every_route_and_dependency_is_async() -> None:
     routes = [r for c in iter_route_contexts(app.routes) if isinstance(r := c.original_route, APIRoute)]
     assert {r.path for r in routes} == {"/v1/projects", "/v1/tasks", "/v1/tasks/{task_id}/approve", "/v1/tasks/{task_id}", "/v1/jobs/{job_id}",
-                                       "/v1/tasks/{task_id}/delegations",
+                                       "/v1/tasks/{task_id}/delegations", "/v1/tasks/{task_id}/cancel", "/v1/projects/{project_id}/tasks",
                                        "/v1/tasks/{task_id}/events", "/v1/projects/{project_id}/events",
                                        "/v1/projects/{project_id}/rollback", "/v1/projects/{project_id}/revoke",
                                        "/v1/hooks/pre-tool-use", "/v1/hooks/lifecycle", "/v1/hud"}
     sync = [(r.path, d.call) for r in routes for d in deps(r.dependant) if d.call and not inspect.iscoroutinefunction(d.call)]
     assert sync == []
+
+
+async def test_task_project_from_cwd_and_base_defaults_and_checks(client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    proj = await project(client, "cwdroot")
+    monkeypatch.setenv("AIRLOCK_ROOTS", f'{{"repo_cwdroot": "{tmp_path}"}}')
+    (sub := tmp_path / "app").mkdir()
+    body = {"parent_session_id": "claude_parent_01", "request": "Add bulk"}
+    r = await client.post("/v1/tasks", headers=auth("bridge", "cwd-1"), json=body | {"cwd": str(sub)})
+    assert r.status_code == 202, r.text
+    task = (await client.get(f"/v1/tasks/{r.json()['task_id']}", headers=auth("bridge"))).json()["task"]
+    assert (task["project_id"], task["base_artifact_id"], task["launchable"], task["last_error"]) == (proj, "art_base_01", [], None)
+    r = await client.post("/v1/tasks", headers=auth("bridge", "cwd-2"), json=body | {"cwd": "/nowhere"})
+    assert (r.status_code, r.json()["error"]["code"]) == (404, "NOT_FOUND")
+    r = await client.post("/v1/tasks", headers=auth("bridge", "cwd-3"), json=body | {"project_id": proj, "base_artifact_id": "art_stale"})
+    assert r.status_code == 404 and "art_stale" in r.json()["error"]["message"]
+    assert (await client.post("/v1/tasks", headers=auth("bridge", "cwd-4"), json=body)).status_code == 422
+
+
+async def test_session_contract_skips_planner_and_awaits_approval(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
+    proj = await project(client, "sesscontract")
+    plan = {"constraints": [], "acceptance": ["works"], "interfaces": {},
+            "assignments": [{"key": "a", "objective": "do it", "depends_on": [], "file_scope": ["app/**"], "profile_key": "backend"}]}
+    r = await client.post("/v1/tasks", headers=auth("bridge", "sc-1"), json=task_body(proj) | {"contract": plan})
+    assert (r.status_code, r.json()["status"], r.json()["job_id"]) == (202, "planned", None), r.text
+    task = await db["tasks"].find_one({"_id": r.json()["task_id"]})
+    assert task is not None and task["contract"]["assignments"][0]["key"] == "a" and task["contract_digest"].startswith("sha256:")
+    assert await db["jobs"].count_documents({"task_id": task["_id"]}) == 0
+    r = await client.post("/v1/tasks", headers=auth("bridge", "sc-2"), json=task_body(proj) | {"contract": plan | {"assignments": []}})
+    assert (r.status_code, r.json()["error"]["code"]) == (422, "CONTRACT_INVALID")
