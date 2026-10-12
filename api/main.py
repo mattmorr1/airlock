@@ -91,7 +91,7 @@ async def create_project(body: ProjectCreate, db: DB, key: Key, actor: Annotated
 
 
 @app.post("/v1/projects/register", status_code=201, response_model=ProjectCreated)
-async def register_project(body: ProjectRegister, db: DB, actor: Annotated[Role, Depends(require(Cap.PROJECT_CREATE))]) -> Doc:
+async def register_project(body: ProjectRegister, db: DB, actor: Annotated[Role, Depends(require(Cap.PROJECT_REGISTER))]) -> Doc:
     """Idempotently register the repo at `cwd` so /airlock:run needs only a request: freeze its tree as the baseline,
     attach the bulk v1 harness, and record `repository.root_path` for DB-driven cwd resolution."""
     root = os.path.realpath(body.cwd)

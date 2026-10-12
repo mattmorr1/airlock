@@ -18,6 +18,7 @@ class Role(StrEnum):
 
 class Cap(StrEnum):
     PROJECT_CREATE = "project:create"
+    PROJECT_REGISTER = "project:register"  # narrow: freeze the cwd tree + attach the standard harness; safe for the bridge to self-register
     TASK_CREATE = "task:create"
     TASK_APPROVE = "task:approve"
     TASK_CANCEL = "task:cancel"
@@ -29,8 +30,8 @@ class Cap(StrEnum):
 
 
 CAPS: dict[Role, frozenset[Cap]] = {
-    Role.OPERATOR: frozenset({Cap.PROJECT_CREATE, Cap.TASK_APPROVE, Cap.TASK_CANCEL, Cap.ROLLBACK, Cap.REVOKE, Cap.READ}),
-    Role.BRIDGE: frozenset({Cap.TASK_CREATE, Cap.DELEGATE, Cap.READ}),
+    Role.OPERATOR: frozenset({Cap.PROJECT_CREATE, Cap.PROJECT_REGISTER, Cap.TASK_APPROVE, Cap.TASK_CANCEL, Cap.ROLLBACK, Cap.REVOKE, Cap.READ}),
+    Role.BRIDGE: frozenset({Cap.PROJECT_REGISTER, Cap.TASK_CREATE, Cap.DELEGATE, Cap.READ}),
     Role.HOOK: frozenset({Cap.HOOK}),
     Role.READER: frozenset({Cap.READ}),
 }
