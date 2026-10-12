@@ -17,7 +17,11 @@ TERMINAL = ("completed", "failed", "cancelled")
 
 async def call(method: str, path: str, **kw: Any) -> dict[str, Any]:
     """API JSON, or a ToolError carrying the API error envelope; MCP hides other exceptions' text from the model."""
-    r = await client.request(method, path, headers={"Idempotency-Key": str(uuid.uuid4())} if method == "POST" else None, **kw)
+    try:
+        r = await client.request(method, path, headers={"Idempotency-Key": str(uuid.uuid4())} if method == "POST" else None, **kw)
+    except httpx.RequestError as e:  # connection refused / timeout: the API likely isn't running. MCP would hide a raw exception's text.
+        raise ToolError(f"Airlock API not reachable at {client.base_url} ({e.__class__.__name__}). Start the stack with scripts/up.sh, "
+                        "then retry.") from e
     if r.is_error:
         raise ToolError(f"{method} {path} -> {r.status_code}: {r.text}")
     return r.json()
@@ -33,7 +37,20 @@ def compact(view: dict[str, Any]) -> dict[str, Any]:
                            for a in contract.get("assignments", [])]}
     if t["status"] == "planned":
         out |= {"contract": contract, "review": f"! airlock show {tid}", "approve": f"! airlock -y approve {tid}"}
+    out["summary"] = summarize(out, tid)
     return out
+
+
+def summarize(out: dict[str, Any], tid: str) -> str:
+    """One human-readable line for the user: status, assignment progress, and the next action."""
+    asn = out["assignments"]
+    n, done = len(asn), sum(a["status"] == "accepted" for a in asn)
+    status, counts = out["status"], f"{done}/{n} assignments accepted" if n else "no assignments yet"
+    tail = {"planned": f"awaiting your approval: ! airlock -y approve {tid}",
+            "completed": f"done -> {out.get('final_artifact_id')}",
+            "failed": out.get("last_error") or "failed",
+            "cancelled": "cancelled"}.get(status, out.get("next") or "in progress")
+    return f"{status} - {counts} - {tail}"
 
 
 @mcp.tool()

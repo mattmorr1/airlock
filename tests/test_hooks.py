@@ -155,7 +155,8 @@ async def test_bridge_plan_status_and_delegate(client: httpx.AsyncClient, db: As
     planned = await tool("airlock_plan", project_id=proj, parent_session_id="sess_bridge", request="Add login", base_artifact_id="art_base_01")
     task = await db["tasks"].find_one({"_id": planned["task_id"]})
     assert task is not None and (task["parent_session_id"], task["status"], planned["status"]) == ("sess_bridge", "draft", "draft")
-    assert (await tool("airlock_status", task_id=planned["task_id"]))["status"] == "draft"
+    status = await tool("airlock_status", task_id=planned["task_id"])
+    assert status["status"] == "draft" and status["summary"].startswith("draft - ")
     assert (await tool("airlock_status", task_id=planned["task_id"], full=True))["task"]["status"] == "draft"
     tid, _, _ = await approved_task(client, db, "bridge-deleg")
     launched = await tool("airlock_delegate", task_id=tid, assignment_key="schema")
