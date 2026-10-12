@@ -144,6 +144,13 @@ async def tool(name: str, **args: object) -> Doc:
     return res.structured_content
 
 
+def test_vendored_plugin_bridge_matches_canonical() -> None:
+    """The plugin ships a self-contained copy of the bridge (marketplace install can't reach the repo). Keep them identical."""
+    repo = Path(__file__).resolve().parents[1]
+    assert (repo / "plugin/bridge/server.py").read_bytes() == (repo / "bridge/server.py").read_bytes(), \
+        "plugin/bridge/server.py drifted from bridge/server.py; re-copy it (cp bridge/server.py plugin/bridge/server.py)"
+
+
 async def test_bridge_exposes_exactly_five_tools() -> None:
     assert sorted(t.name for t in await server.mcp.list_tools()) == \
         ["airlock_delegate", "airlock_plan", "airlock_register", "airlock_run", "airlock_status"]

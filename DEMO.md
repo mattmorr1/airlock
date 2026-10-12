@@ -8,9 +8,11 @@ open http://127.0.0.1:8099                      # dashboard, full screen on the 
 cd target-app && claude --plugin-dir ../plugin  # terminal 2, inside the registered repo
 ```
 
-**Plugin:** launch with `claude --plugin-dir ../plugin` from `target-app/`, the repo `up.sh` registers as
-`repo_full` in `AIRLOCK_ROOTS`, so `/airlock:run` finds the project from the directory. Don't use
-`/plugin install`: the marketplace copy can't find `bridge/server.py`, so its MCP server dies (ADR 0008).
+**Plugin:** two ways in. For local dev, `claude --plugin-dir ../plugin` from `target-app/`. For a clean
+install, `/plugin marketplace add mattmorr1/airlock@matt-feat` then `/plugin install airlock@mongohack` —
+the bridge is vendored into the plugin and launched with `uv run --with`, so the marketplace copy is
+self-contained (no repo needed; ADR 0008 described the older `--project ..` layout that couldn't find
+`bridge/server.py`). Either way `/airlock:run <request>` auto-registers the project from the current directory.
 
 **HUD:** `.claude/settings.json` points the statusline at
 `plugin/scripts/hud.py` and supplies the dev tokens. `up.sh` sets
