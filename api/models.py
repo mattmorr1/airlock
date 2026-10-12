@@ -14,6 +14,14 @@ class Strict(BaseModel):
 class Repository(Strict):
     registered_root_id: Name
     default_branch: Name = "main"
+    root_path: Annotated[str | None, Field(min_length=1, max_length=4096)] = None  # host path for DB-driven cwd resolution (auto-register)
+
+
+class ProjectRegister(Strict):
+    """Auto-register the repo at `cwd` as a project: freeze its tree as the baseline and attach the bulk v1 harness.
+    Idempotent by `cwd` — re-registering an already-known root returns the existing project."""
+    cwd: Annotated[str, Field(min_length=1, max_length=4096)]
+    name: Name | None = None
 
 
 class ProjectCreate(Strict):

@@ -4,6 +4,7 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Query, Request
@@ -17,7 +18,8 @@ from api.auth import Cap, Role, require
 from api.errors import ApiError
 from api.events import Bell, router
 from api.idempotency import digest, idempotent
-from api.models import Approve, Approved, ProjectCreate, ProjectCreated, TaskCreate, TaskCreated
+from api.models import Approve, Approved, ProjectCreate, ProjectCreated, ProjectRegister, TaskCreate, TaskCreated
+from controller import artifacts, harness, snapshots
 from controller import db as dbmod
 from controller import planner
 from controller.db import Doc
@@ -88,6 +90,31 @@ async def create_project(body: ProjectCreate, db: DB, key: Key, actor: Annotated
     return await idempotent(db, "-", actor, "project.create", key, digest("POST /v1/projects", body.model_dump(mode="json")), fn)
 
 
+@app.post("/v1/projects/register", status_code=201, response_model=ProjectCreated)
+async def register_project(body: ProjectRegister, db: DB, actor: Annotated[Role, Depends(require(Cap.PROJECT_CREATE))]) -> Doc:
+    """Idempotently register the repo at `cwd` so /airlock:run needs only a request: freeze its tree as the baseline,
+    attach the bulk v1 harness, and record `repository.root_path` for DB-driven cwd resolution."""
+    root = os.path.realpath(body.cwd)
+    if not os.path.isdir(root):
+        raise ApiError(422, "INVALID_REQUEST", f"{body.cwd} is not a directory on the API host")
+    if (existing := await db["projects"].find_one({"repository.root_path": root}, {"_id": 1}, sort=[("created_at", -1)])) is not None:
+        return {"project_id": existing["_id"]}
+
+    def seed() -> str:
+        from common.db import col
+        pid = new_id(Prefix.PROJECT)
+        base = artifacts.put_tree(snapshots.read_dir_tree(Path(root)), kind="baseline", project_id=pid, created_by=actor.value)
+        hv = harness.bootstrap_bulk_v1(pid)
+        col("projects").insert_one({
+            "_id": pid, "schema_version": SCHEMA_VERSION, "name": body.name or Path(root).name, "created_at": datetime.now(UTC),
+            "repository": {"registered_root_id": f"repo_{pid[-6:]}", "default_branch": "main", "root_path": root},
+            "baseline_artifact_id": base["_id"], "active_harness_version_id": hv["_id"],
+            "harness_generation": 1, "constraint_epoch": 1, "validated_harness_ids": [hv["_id"]], "event_seq": 0, "revision": 1})
+        return pid
+
+    return {"project_id": await asyncio.to_thread(seed)}
+
+
 async def resolve_base(db: AsyncDatabase[Doc], body: TaskCreate) -> tuple[str, str]:
     """(project_id, base_artifact_id) with defaults applied; 404 for an unknown project or an artifact outside it."""
     if (pid := body.project_id) is None:
@@ -96,8 +123,12 @@ async def resolve_base(db: AsyncDatabase[Doc], body: TaskCreate) -> tuple[str, s
         roots = sorted(((r, p) for r, p in json.loads(os.environ.get("AIRLOCK_ROOTS") or "{}").items() if hooks.inside(body.cwd, p)),
                        key=lambda rp: len(rp[1]), reverse=True)
         proj = await db["projects"].find_one({"repository.registered_root_id": roots[0][0]}, {"_id": 1}, sort=[("created_at", -1)]) if roots else None
+        if proj is None:  # fall back to DB-registered root paths (auto-registered projects); longest containing path wins
+            matches = [p async for p in db["projects"].find({"repository.root_path": {"$type": "string"}}, {"repository.root_path": 1})
+                       if hooks.inside(body.cwd, p["repository"]["root_path"])]
+            proj = max(matches, key=lambda p: len(p["repository"]["root_path"]), default=None)
         if proj is None:
-            raise ApiError(404, "NOT_FOUND", f"no project is registered for {body.cwd}; pass project_id or register this repo in AIRLOCK_ROOTS")
+            raise ApiError(404, "NOT_FOUND", f"no project is registered for {body.cwd}; call /v1/projects/register (airlock_register) or pass project_id")
         pid = proj["_id"]
     proj = await find(db, "projects", pid)
     if (art := body.base_artifact_id) is None:

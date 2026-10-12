@@ -37,6 +37,13 @@ def compact(view: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def airlock_register(cwd: str | None = None, name: str | None = None) -> dict[str, Any]:
+    """Idempotently register this session's project (default: current directory) with Airlock, returning its project_id.
+    Safe to call every run: a repo that's already registered returns its existing project. Call before airlock_plan."""
+    return await call("POST", "/v1/projects/register", json={"cwd": cwd or os.getcwd(), **({"name": name} if name else {})})
+
+
+@mcp.tool()
 async def airlock_plan(parent_session_id: str, request: str, cwd: str | None = None, project_id: str | None = None,
                        base_artifact_id: str | None = None, contract: dict[str, Any] | None = None) -> dict[str, Any]:
     """Create an Airlock task for the project registered at `cwd` (default: this session's directory), based on its latest integrated tree.

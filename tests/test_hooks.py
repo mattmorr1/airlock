@@ -144,8 +144,9 @@ async def tool(name: str, **args: object) -> Doc:
     return res.structured_content
 
 
-async def test_bridge_exposes_exactly_four_tools() -> None:
-    assert sorted(t.name for t in await server.mcp.list_tools()) == ["airlock_delegate", "airlock_plan", "airlock_run", "airlock_status"]
+async def test_bridge_exposes_exactly_five_tools() -> None:
+    assert sorted(t.name for t in await server.mcp.list_tools()) == \
+        ["airlock_delegate", "airlock_plan", "airlock_register", "airlock_run", "airlock_status"]
 
 
 @pytest.mark.usefixtures("bridge")

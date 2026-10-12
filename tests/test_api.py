@@ -193,7 +193,7 @@ def deps(d: Dependant) -> list[Dependant]:
 
 async def test_every_route_and_dependency_is_async() -> None:
     routes = [r for c in iter_route_contexts(app.routes) if isinstance(r := c.original_route, APIRoute)]
-    assert {r.path for r in routes} == {"/v1/projects", "/v1/tasks", "/v1/tasks/{task_id}/approve", "/v1/tasks/{task_id}", "/v1/jobs/{job_id}",
+    assert {r.path for r in routes} == {"/v1/projects", "/v1/projects/register", "/v1/tasks", "/v1/tasks/{task_id}/approve", "/v1/tasks/{task_id}", "/v1/jobs/{job_id}",
                                        "/v1/tasks/{task_id}/delegations", "/v1/tasks/{task_id}/cancel", "/v1/projects/{project_id}/tasks",
                                        "/v1/tasks/{task_id}/events", "/v1/projects/{project_id}/events",
                                        "/v1/projects/{project_id}/rollback", "/v1/projects/{project_id}/revoke",
@@ -216,6 +216,23 @@ async def test_task_project_from_cwd_and_base_defaults_and_checks(client: httpx.
     r = await client.post("/v1/tasks", headers=auth("bridge", "cwd-3"), json=body | {"project_id": proj, "base_artifact_id": "art_stale"})
     assert r.status_code == 404 and "art_stale" in r.json()["error"]["message"]
     assert (await client.post("/v1/tasks", headers=auth("bridge", "cwd-4"), json=body)).status_code == 422
+
+
+async def test_task_resolves_project_by_db_root_path_without_env_roots(client: httpx.AsyncClient, db: AsyncDatabase[Doc],
+                                                                       monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Auto-registered projects carry repository.root_path; cwd resolves off the DB even with no AIRLOCK_ROOTS entry."""
+    monkeypatch.delenv("AIRLOCK_ROOTS", raising=False)
+    proj = await project(client, "dbroot")
+    await db["projects"].update_one({"_id": proj}, {"$set": {"repository.root_path": str(tmp_path.resolve())}})
+    (sub := tmp_path / "pkg" / "deep").mkdir(parents=True)
+    body = {"parent_session_id": "claude_parent_01", "request": "Add bulk", "cwd": str(sub)}
+    r = await client.post("/v1/tasks", headers=auth("bridge", "dbroot-1"), json=body)
+    assert r.status_code == 202, r.text
+    task = (await client.get(f"/v1/tasks/{r.json()['task_id']}", headers=auth("bridge"))).json()["task"]
+    assert task["project_id"] == proj
+    # A cwd outside any registered root (env or DB) still 404s.
+    r = await client.post("/v1/tasks", headers=auth("bridge", "dbroot-2"), json=body | {"cwd": "/nowhere"})
+    assert (r.status_code, r.json()["error"]["code"]) == (404, "NOT_FOUND")
 
 
 async def test_session_contract_skips_planner_and_awaits_approval(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
