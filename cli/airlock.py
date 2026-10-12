@@ -10,11 +10,23 @@ import httpx
 
 
 def operator_token() -> str:
-    return os.environ.get("AIRLOCK_TOKEN_OPERATOR") or (Path.home() / ".airlock" / "operator.token").read_text().strip()
+    if tok := os.environ.get("AIRLOCK_TOKEN_OPERATOR"):
+        return tok
+    try:
+        return (Path.home() / ".airlock" / "operator.token").read_text().strip()
+    except FileNotFoundError:
+        sys.exit("no operator token: set AIRLOCK_TOKEN_OPERATOR or write ~/.airlock/operator.token (see scripts/up.sh).")
+
+
+def request(client: httpx.Client, method: str, path: str, **kw: Any) -> httpx.Response:
+    try:
+        return client.request(method, path, **kw)
+    except httpx.RequestError as e:  # API not running / unreachable: a readable line beats a traceback.
+        sys.exit(f"Airlock API not reachable at {client.base_url} ({e.__class__.__name__}). Start the stack with scripts/up.sh, then retry.")
 
 
 def get(client: httpx.Client, path: str) -> Any:
-    r = client.get(path)
+    r = request(client, "GET", path)
     if r.is_error:
         sys.exit(f"{path} -> {r.status_code}: {r.text}")
     return r.json()
@@ -83,7 +95,7 @@ def approve(client: httpx.Client, task_id: str, yes: bool) -> int:
 def confirm_post(client: httpx.Client, prompt: str, path: str, body: dict[str, str] | None = None, yes: bool = False) -> int:
     if not yes and input(f"{prompt} [y/N] ").strip().lower() != "y":
         return 1
-    r = client.post(path, json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
+    r = request(client, "POST", path, json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
     print(r.text, file=sys.stderr if r.is_error else sys.stdout)
     return 1 if r.is_error else 0
 
