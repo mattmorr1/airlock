@@ -38,9 +38,12 @@ def compact(view: dict[str, Any]) -> dict[str, Any]:
 
 @mcp.tool()
 async def airlock_register(cwd: str | None = None, name: str | None = None) -> dict[str, Any]:
-    """Idempotently register this session's project (default: current directory) with Airlock, returning its project_id.
-    Safe to call every run: a repo that's already registered returns its existing project. Call before airlock_plan."""
-    return await call("POST", "/v1/projects/register", json={"cwd": cwd or os.getcwd(), **({"name": name} if name else {})})
+    """Idempotently register this session's project (default: current directory) with Airlock, returning its project_id and
+    the live dashboard URL to show the user. Safe to call every run: an already-registered repo returns its existing project.
+    Call before airlock_plan."""
+    r = await call("POST", "/v1/projects/register", json={"cwd": cwd or os.getcwd(), **({"name": name} if name else {})})
+    dash = os.environ.get("AIRLOCK_DASHBOARD_URL", "http://127.0.0.1:8099")
+    return r | {"dashboard_url": f"{dash}/?project={r['project_id']}"}
 
 
 @mcp.tool()
