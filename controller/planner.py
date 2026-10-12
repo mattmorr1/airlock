@@ -4,9 +4,10 @@ import json
 from collections.abc import Awaitable, Callable
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
+from typing import Any, Literal
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.asynchronous.database import AsyncDatabase
 
@@ -22,6 +23,10 @@ first), file_scope (the only files it may change), and profile_key.
 file_scope entries are exact relative file paths or directory prefixes written dir/**; no other wildcards.
 Assignments with overlapping file scopes must be ordered through depends_on; otherwise the controller orders them by list position.
 Also list constraints every worker must respect, acceptance criteria for the finished task, and interfaces shared between assignments.
+Turn each testable acceptance criterion into executable checks the trusted runner will run against the finished app. Prefer `checks`: \
+declarative HTTP steps (`as` a seeded user such as alice or bob, method, path, json, expect_status, or same_response_as an earlier step id), \
+with `bind` naming documents to template into `{name}` and `unchanged` listing binds that must be identical afterwards. Use `tests` (pytest \
+modules reading AIRLOCK_BASE_URL, AIRLOCK_TOKENS, TARGET_MONGO_URI, TARGET_DB) only for what steps cannot express.
 
 Request:
 {request}"""
@@ -36,12 +41,52 @@ class Assignment(BaseModel):
     profile_key: str
 
 
+class Bind(BaseModel):
+    """`{name}` in a step's path or json becomes the _id of the index-th document (by _id) matching filter."""
+    model_config = ConfigDict(extra="forbid")
+    collection: str
+    filter: dict[str, Any]
+    index: int = 0
+
+
+class Step(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    id: str
+    as_: str | None = Field(None, alias="as")
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+    path: str
+    headers: dict[str, str] = {}
+    json_: Any = Field(None, alias="json")
+    expect_status: int | None = None
+    same_response_as: str | None = None
+
+
+class HttpCheck(BaseModel):
+    """Declarative acceptance check run by the trusted contract driver; `unchanged` binds must be identical after the last step."""
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    description: str
+    bind: dict[str, Bind] = {}
+    steps: list[Step]
+    unchanged: list[str] = []
+
+
+class TestModule(BaseModel):
+    """A pytest module run against the live app: env AIRLOCK_BASE_URL, AIRLOCK_TOKENS (json name->bearer), TARGET_MONGO_URI, TARGET_DB."""
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    description: str
+    code: str
+
+
 class Plan(BaseModel):
     model_config = ConfigDict(extra="forbid")
     constraints: list[str]
     acceptance: list[str]
     interfaces: dict[str, str]
     assignments: list[Assignment]
+    checks: list[HttpCheck] = []
+    tests: list[TestModule] = []
 
 
 class PlannerError(Exception):
@@ -83,8 +128,12 @@ def validate(request: str, raw: object) -> Doc | list[str]:
         plan = Plan.model_validate(raw)
     except ValidationError as e:
         return [f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()]
-    keys = [a.key for a in plan.assignments]
+    keys, check_ids = [a.key for a in plan.assignments], [c.id for c in [*plan.checks, *plan.tests]]
     errors = ["plan has no assignments"] if not keys else []
+    errors += [f"duplicate check id {i!r}" for i in sorted({i for i in check_ids if check_ids.count(i) > 1})]
+    errors += [f"check {c.id}: unchanged {u!r} is not a bind" for c in plan.checks for u in c.unchanged if u not in c.bind]
+    errors += [f"check {c.id}: step {st.id} same_response_as unknown step {st.same_response_as!r}" for c in plan.checks for i, st in enumerate(c.steps)
+               if st.same_response_as and st.same_response_as not in [x.id for x in c.steps[:i]]]
     errors += [f"duplicate assignment key {k!r}" for k in sorted({k for k in keys if keys.count(k) > 1})]
     errors += [f"{a.key}: unknown depends_on key {d!r}" for a in plan.assignments for d in a.depends_on if d not in keys]
     errors += [f"{a.key}: file_scope entry {e!r} is not an exact path or dir/**" for a in plan.assignments for e in a.file_scope if not scope_ok(e)]
@@ -103,7 +152,10 @@ def validate(request: str, raw: object) -> Doc | list[str]:
                 deps[b.key].append(a.key)
                 inferred.append([a.key, b.key])
     return {"request": request, "constraints": plan.constraints, "acceptance": plan.acceptance, "interfaces": plan.interfaces,
-            "assignments": [{**a.model_dump(), "depends_on": deps[a.key]} for a in plan.assignments], "inferred_edges": inferred}
+            "assignments": [{**a.model_dump(), "depends_on": deps[a.key]} for a in plan.assignments], "inferred_edges": inferred,
+            # Only when present, so contracts without generated checks keep their pre-existing digests.
+            **({"checks": [c.model_dump(by_alias=True) for c in plan.checks]} if plan.checks else {}),
+            **({"tests": [t.model_dump() for t in plan.tests]} if plan.tests else {})}
 
 
 def digest(contract: Doc) -> str:

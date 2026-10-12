@@ -1,0 +1,9 @@
+{
+  "env": {
+    "AIRLOCK_URL": "http://127.0.0.1:8000",
+    "AIRLOCK_TOKEN_BRIDGE": "bridge-secret",
+    "AIRLOCK_TOKEN_HOOK": "hook-secret",
+    "AIRLOCK_TOKEN_OPERATOR": "op-secret"
+  },
+  "statusLine": {"type": "command", "command": "python3 ../plugin/scripts/hud.py", "padding": 0}
+}

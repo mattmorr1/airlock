@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+import certifi
 import gridfs
 from pymongo import MongoClient
 from pymongo.database import Database
@@ -33,6 +34,9 @@ COLLECTIONS = (
 @lru_cache(maxsize=1)
 def get_client() -> MongoClient:
     s = get_settings()
+    # python.org macOS builds lack the system CA store; same srv-only rule as controller/db.py.
+    if s.mongo_uri.startswith("mongodb+srv://"):
+        return MongoClient(s.mongo_uri, tz_aware=True, tlsCAFile=certifi.where())
     return MongoClient(s.mongo_uri, tz_aware=True)
 
 

@@ -28,7 +28,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from controller.db import Doc
 from controller.policies import accept_validation_guarded, promote
-from controller.scheduler import complete, enqueue, on_integration_pass, on_validation_pass
+from controller.scheduler import complete, enqueue, integration_is_final, on_integration_pass, on_validation_pass
 from controller.states import (
     SCHEMA_VERSION,
     DelegationState,
@@ -108,30 +108,70 @@ async def handle_launch(db: AsyncDatabase[Doc], job: Doc) -> None:
 # --------------------------------------------------------------------------- #
 # validate: run the trusted suite, record the verdict, pass or repair          #
 # --------------------------------------------------------------------------- #
-def _validate_sync(p: Doc) -> Doc:
+def _suite_sync(art_id: str, hv_id: str, tag: str, contract: Doc | None = None) -> Doc:
     from controller import artifacts, harness
     from runner.bulk_execute import run_bulk_suite
     from runner.execute import run_suite
 
-    config = harness.get_config(p["harness_version_id"])
+    config = harness.get_config(hv_id)
     d = Path(mkdtemp(prefix="val-"))
-    artifacts.materialize(p["candidate_artifact_id"], d)
+    artifacts.materialize(art_id, d)
     if config.get("runner") == "bulk":
-        return run_bulk_suite(d, config, seed=103, run_tag=p["candidate_artifact_id"][-8:])
-    return run_suite(d, config, seed=103)
+        return run_bulk_suite(d, config, seed=103, run_tag=tag, contract=contract)
+    res = run_suite(d, config, seed=103)
+    if contract and (contract.get("checks") or contract.get("tests")):  # fail closed: approved acceptance checks were not run
+        res["checks"] = [*res["checks"], {"id": "contract_checks", "status": "error", "detail": "this harness's runner cannot run contract checks"}]
+        res["decision"] = ValidationDecision.INCONCLUSIVE.value
+    return res
+
+
+def _validate_sync(p: Doc, contract: Doc | None) -> Doc:
+    return _suite_sync(p["candidate_artifact_id"], p["harness_version_id"], p["candidate_artifact_id"][-8:], contract)
+
+
+async def reference_run(db: AsyncDatabase[Doc], project_id: str, art_id: str, hv_id: str, task: Doc) -> Doc | None:
+    """The suite's result on a delegation's input tree, cached per (artifact, harness, contract); None when its observer failed."""
+    q = {"kind": "reference", "inputs.candidate_artifact_id": art_id, "inputs.harness_version_id": hv_id,
+         "inputs.contract_digest": task.get("contract_digest")}
+    if (ref := await db["validation_runs"].find_one(q)) is None:
+        res = await asyncio.to_thread(_suite_sync, art_id, hv_id, "ref" + art_id[-6:], task.get("contract"))
+        ref = {"_id": new_id(Prefix.VALIDATION_RUN), "schema_version": SCHEMA_VERSION, "project_id": project_id, "task_id": None,
+               "kind": "reference", "status": "completed", "decision": res["decision"], "checks": res["checks"],
+               "behavior_delta": res["behavior_delta"], "coverage": res["coverage"], "observer_ok": res.get("observer_ok", True),
+               "inputs": {"candidate_artifact_id": art_id, "harness_version_id": hv_id, "contract_digest": task.get("contract_digest")},
+               "created_at": datetime.now(UTC)}
+        await db["validation_runs"].insert_one(ref)
+    return ref if ref["observer_ok"] else None
+
+
+def regression_gate(result: Doc, ref: Doc | None) -> str:
+    """Pass unless a check that passed on the input tree stops passing or a write goes partial; no usable reference keeps the absolute verdict."""
+    if ref is None or not result.get("observer_ok", True):
+        return result["decision"]
+    before = {c["id"]: c["status"] for c in ref["checks"]}
+    if result["behavior_delta"].get("partial_write") or any(before.get(c["id"]) == "pass" and c["status"] != "pass" for c in result["checks"]):
+        return ValidationDecision.REPAIR_REQUIRED.value
+    new_errors = any(c["status"] == "error" and before.get(c["id"]) != "error" for c in result["checks"])
+    return (ValidationDecision.INCONCLUSIVE if new_errors or not result["checks"] else ValidationDecision.PASS).value
 
 
 async def handle_validate(db: AsyncDatabase[Doc], job: Doc) -> None:
     owner, fence = job["lease"]["owner"], job["lease"]["fence"]
     p = job["payload"]
     wr = await db["worker_runs"].find_one({"_id": p["worker_run_id"]})
-    result = await asyncio.to_thread(_validate_sync, p)
+    task = await db["tasks"].find_one({"_id": wr["task_id"]}, {"contract": 1, "contract_digest": 1}) or {}
+    result = await asyncio.to_thread(_validate_sync, p, task.get("contract"))
+    absolute, ref = result["decision"], None
+    if absolute != ValidationDecision.PASS.value:
+        ref = await reference_run(db, wr["project_id"], wr["input_artifact_id"], p["harness_version_id"], task)
+        result["decision"] = regression_gate(result, ref)
 
     val_id = new_id(Prefix.VALIDATION_RUN)
     digest = "sha256:" + hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest()
     await db["validation_runs"].insert_one({
         "_id": val_id, "schema_version": SCHEMA_VERSION, "project_id": wr["project_id"], "task_id": wr["task_id"],
-        "kind": "candidate", "status": "completed", "decision": result["decision"], "input_digest": digest,
+        "kind": "candidate", "status": "completed", "decision": result["decision"], "absolute_decision": absolute,
+        "reference_run_id": ref["_id"] if ref else None, "input_digest": digest,
         "checks": result["checks"], "behavior_delta": result["behavior_delta"], "coverage": result["coverage"],
         "observer_ok": result["observer_ok"], "elapsed_ms": result["elapsed_ms"],
         "inputs": {"candidate_artifact_id": p["candidate_artifact_id"], "harness_version_id": p["harness_version_id"]},
@@ -154,12 +194,10 @@ async def handle_validate(db: AsyncDatabase[Doc], job: Doc) -> None:
 # --------------------------------------------------------------------------- #
 # integrate: compose onto the task tree, re-validate, accept or repair         #
 # --------------------------------------------------------------------------- #
-def _integrate_sync(dele: Doc, base_art: str, candidate_art: str, hv_id: str) -> Doc:
-    from controller import artifacts, harness
+def _integrate_sync(dele: Doc, base_art: str, candidate_art: str, hv_id: str, contract: Doc | None = None) -> Doc:
+    from controller import artifacts
     from controller.integration import compose
     from controller.snapshots import diff_trees
-    from runner.bulk_execute import run_bulk_suite
-    from runner.execute import run_suite
 
     base_tree = artifacts.get_tree(base_art)
     cdoc = artifacts.get_doc(candidate_art)
@@ -172,12 +210,8 @@ def _integrate_sync(dele: Doc, base_art: str, candidate_art: str, hv_id: str) ->
     art = artifacts.put_tree(combined, kind="integrated", project_id=dele["project_id"], task_id=dele["task_id"],
                              base_artifact_id=base_art, changed_files=diff_trees(base_tree, combined)["changed_files"],
                              created_by="integrator_01")
-    d = Path(mkdtemp(prefix="int-"))
-    artifacts.materialize(art["_id"], d)
-    config = harness.get_config(hv_id)
-    res = run_bulk_suite(d, config, seed=103, run_tag="int" + art["_id"][-6:]) if config.get("runner") == "bulk" \
-        else run_suite(d, config, seed=103)
-    return {"conflicts": [], "combined_artifact_id": art["_id"], "decision": res["decision"],
+    res = _suite_sync(art["_id"], hv_id, "int" + art["_id"][-6:], contract)
+    return {"conflicts": [], "combined_artifact_id": art["_id"], "decision": res["decision"], "observer_ok": res.get("observer_ok", True),
             "checks": res["checks"], "behavior_delta": res["behavior_delta"], "coverage": res["coverage"]}
 
 
@@ -186,8 +220,14 @@ async def handle_integrate(db: AsyncDatabase[Doc], job: Doc) -> None:
     p = job["payload"]
     dele = await db["delegations"].find_one({"_id": p["delegation_id"]})
     wr = await db["worker_runs"].find_one({"_id": dele["active_worker_run_id"]})
+    task = await db["tasks"].find_one({"_id": dele["task_id"]}, {"contract": 1, "contract_digest": 1}) or {}
     res = await asyncio.to_thread(_integrate_sync, dele, dele["resolved_input_artifact_id"],
-                                  wr["output_artifact_id"], wr["harness_version_id"])
+                                  wr["output_artifact_id"], wr["harness_version_id"], task.get("contract"))
+    absolute, ref = res["decision"], None
+    # Only the task's final integration must pass the whole suite; earlier ones must not regress their input tree.
+    if res["combined_artifact_id"] and absolute != ValidationDecision.PASS.value and not await integration_is_final(None, db, dele["task_id"], dele["_id"]):
+        ref = await reference_run(db, dele["project_id"], dele["resolved_input_artifact_id"], wr["harness_version_id"], task)
+        res["decision"] = regression_gate(res, ref)
     now = datetime.now(UTC)
 
     # Persist the combined validation run (non-state-machine doc) before completion.
@@ -196,7 +236,8 @@ async def handle_integrate(db: AsyncDatabase[Doc], job: Doc) -> None:
         val_id = new_id(Prefix.VALIDATION_RUN)
         await db["validation_runs"].insert_one({
             "_id": val_id, "schema_version": SCHEMA_VERSION, "project_id": dele["project_id"], "task_id": dele["task_id"],
-            "kind": "integration", "status": "completed", "decision": res["decision"], "checks": res["checks"],
+            "kind": "integration", "status": "completed", "decision": res["decision"], "absolute_decision": absolute,
+            "reference_run_id": ref["_id"] if ref else None, "checks": res["checks"],
             "behavior_delta": res["behavior_delta"], "coverage": res["coverage"],
             "inputs": {"candidate_artifact_id": res["combined_artifact_id"], "harness_version_id": wr["harness_version_id"]},
             "created_at": now})

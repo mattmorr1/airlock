@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,6 +14,14 @@ class Strict(BaseModel):
 class Repository(Strict):
     registered_root_id: Name
     default_branch: Name = "main"
+    root_path: Annotated[str | None, Field(min_length=1, max_length=4096)] = None  # host path for DB-driven cwd resolution (auto-register)
+
+
+class ProjectRegister(Strict):
+    """Auto-register the repo at `cwd` as a project: freeze its tree as the baseline and attach the bulk v1 harness.
+    Idempotent by `cwd` — re-registering an already-known root returns the existing project."""
+    cwd: Annotated[str, Field(min_length=1, max_length=4096)]
+    name: Name | None = None
 
 
 class ProjectCreate(Strict):
@@ -28,16 +36,19 @@ class ProjectCreated(Strict):
 
 
 class TaskCreate(Strict):
-    project_id: Annotated[str, Field(pattern=r"^proj_")]
+    """Without project_id, the project is the one whose registered root contains `cwd`; base defaults to its latest integrated tree."""
     parent_session_id: Name
     request: Annotated[str, Field(min_length=1, max_length=20_000)]
-    base_artifact_id: Annotated[str, Field(pattern=r"^art_")]
+    cwd: Annotated[str | None, Field(min_length=1, max_length=4096)] = None
+    project_id: Annotated[str | None, Field(pattern=r"^proj_")] = None
+    base_artifact_id: Annotated[str | None, Field(pattern=r"^art_")] = None
+    contract: dict[str, Any] | None = None  # session-written plan; validated like the planner's and goes straight to planned
 
 
 class TaskCreated(Strict):
     task_id: str
     status: TaskState
-    job_id: str
+    job_id: str | None
 
 
 class Approve(Strict):

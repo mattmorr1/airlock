@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Airlock | MongoDB Hackathon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#111923; --panel2:#0d141c; --line:#1f2b38; --line2:#33465a;
+    --mint:#00ED64; --mint-bg:rgba(0,237,100,.10); --mint-bd:rgba(0,237,100,.35);
+    --red:#ff7b72; --red-bg:rgba(255,123,114,.10); --red-bd:rgba(255,123,114,.35);
+    --amber:#ffcf56; --amber-bg:rgba(255,207,86,.10); --amber-bd:rgba(255,207,86,.35);
+    --txt:#d7e0ea; --mut:#8aa0b4; --sans:Inter,-apple-system,"Segoe UI",sans-serif; --mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+    --r-background-color:var(--bg);
+  }
+  html,body{background:var(--bg);}
+  .reveal{font-family:var(--sans);color:var(--txt);}
+  .reveal .slides{text-align:left;}
+  .reveal .slides section{font-size:22px;line-height:1.45;padding-top:40px;}
+  .reveal h1,.reveal h2,.reveal h3,.reveal h4{font-family:var(--sans);color:#fff;text-transform:none;letter-spacing:-.02em;font-weight:700;margin:0;}
+  .reveal h1{font-size:76px;line-height:1.02;font-weight:800;}
+  .reveal h2{font-size:44px;line-height:1.1;margin:6px 0 28px;}
+  .reveal h3{font-size:22px;margin-bottom:10px;}
+  .reveal h4{font-size:17px;letter-spacing:0;}
+  .reveal p{margin:0 0 14px;line-height:1.45;}
+  .reveal strong{color:#fff;font-weight:600;}
+  .reveal ul{display:block;margin:0 0 0 22px;padding:0;}
+  .reveal li{margin:0 0 12px;}
+  .reveal ul li::marker{color:var(--mint);}
+  .reveal code,.reveal pre{font-family:var(--mono);font-variant-ligatures:none;}
+  .reveal pre{box-shadow:none;width:100%;margin:0 0 12px;font-size:15px;}
+  .reveal pre code{padding:16px 18px;border-radius:10px;max-height:none;border:1px solid var(--line);background:var(--panel2);line-height:1.55;}
+
+  .mint{color:var(--mint);} .red{color:var(--red);} .amber{color:var(--amber);} .mut{color:var(--mut);}
+  .small{font-size:18px;} .xs{font-size:15px;}
+  .kicker{color:var(--mint);font-weight:700;letter-spacing:.16em;text-transform:uppercase;font-size:13px;}
+  .tag{font-family:var(--mono);font-size:.88em;color:var(--mint);background:var(--mint-bg);padding:1px 6px;border-radius:5px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:start;}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 24px;}
+  .card.bd-red{border-color:var(--red-bd);} .card.bd-mint{border-color:var(--mint-bd);}
+  .reveal p.caption{color:var(--mut);font-size:17px;margin:24px 0 0;}
+  .badge{display:inline-block;font-family:var(--mono);font-size:13px;font-weight:600;padding:4px 10px;border-radius:6px;border:1px solid;}
+  .badge.mint{background:var(--mint-bg);border-color:var(--mint-bd);} .badge.red{background:var(--red-bg);border-color:var(--red-bd);}
+  .badge.amber{background:var(--amber-bg);border-color:var(--amber-bd);} .badge.mut{background:#151e28;border-color:var(--line2);color:var(--mut);}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;}
+  .chip{font-family:var(--mono);font-size:13px;color:var(--txt);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:3px 8px;}
+
+  .steps{list-style:none;margin:0;padding:0;counter-reset:s;}
+  .reveal ol.steps{display:block;margin:0;list-style:none;}
+  .steps li{position:relative;margin:0;padding:0 0 14px 38px;font-size:18px;line-height:1.35;}
+  .steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:0;width:24px;height:24px;border-radius:50%;border:1px solid var(--mint-bd);background:var(--mint-bg);color:var(--mint);font:600 12px/24px var(--sans);text-align:center;}
+  .steps li::after{content:"";position:absolute;left:12px;top:28px;bottom:3px;width:1px;background:var(--line2);}
+  .steps li:last-child{padding-bottom:0;} .steps li:last-child::after{display:none;}
+  .steps.st-amber li::before{border-color:var(--amber-bd);background:var(--amber-bg);color:var(--amber);}
+  .steps li.hl{color:#fff;font-weight:600;}
+
+  .arch{display:grid;grid-template-columns:190px 56px 1.15fr 56px 1.05fr 56px 1.2fr;align-items:stretch;}
+  .node{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 16px 18px;display:flex;flex-direction:column;gap:8px;}
+  .node .sub{font-family:var(--mono);font-size:11px;color:var(--mut);letter-spacing:.04em;text-transform:uppercase;}
+  .node ul{margin:2px 0 0 16px;font-size:16px;line-height:1.35;} .node li{margin:0 0 4px;}
+  .node.db{border-color:var(--mint-bd);background:linear-gradient(180deg,rgba(0,237,100,.07),var(--panel) 60%);}
+  .node.db h4{color:var(--mint);}
+  .node.side{align-self:center;}
+  .node.target{margin-top:12px;border-style:dashed;padding:12px 14px;}
+  .arrow{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px;padding:0 6px;font-size:11px;color:var(--mut);text-align:center;line-height:1.2;}
+  .arrow i{display:block;width:100%;height:2px;background:var(--line2);position:relative;}
+  .arrow i::after,.arrow.both i::before{content:"";position:absolute;top:-4px;border:5px solid transparent;}
+  .arrow i::after{right:-2px;border-left:8px solid var(--line2);border-right:0;}
+  .arrow.both i::before{left:-2px;border-right:8px solid var(--line2);border-left:0;}
+
+
+  .cfg{font-family:var(--mono);font-size:13.5px;line-height:1.6;white-space:pre;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px 16px;color:var(--txt);}
+  .cfg .add{color:var(--mint);} .cfg .c{color:var(--mut);}
+  .rule{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px;}
+  .rule div{font-size:14px;line-height:1.4;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel);}
+  .metric{text-align:center;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 10px 18px;}
+  .metric .n{font-size:46px;font-weight:800;color:var(--mint);line-height:1;letter-spacing:-.02em;}
+  .metric .l{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.1em;margin-top:10px;}
+  .bar{display:grid;grid-template-columns:110px 1fr 36px;gap:12px;align-items:center;margin:0 0 10px;font-size:15px;}
+  .bar .track{height:22px;background:#17212c;border-radius:6px;overflow:hidden;}
+  .bar .fill{height:100%;border-radius:6px;}
+  .bar .v{font-weight:700;font-family:var(--mono);text-align:right;}
+
+  .reveal table{font-size:16px;border-collapse:collapse;width:100%;}
+  .reveal table th{color:var(--mint);font-weight:600;border-bottom:1px solid var(--line2);padding:8px 10px;text-align:left;}
+  .reveal table td{border-bottom:1px solid var(--line);padding:9px 10px;vertical-align:top;}
+
+  .win{background:var(--panel2);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:14px;}
+  .win .bar-t{display:flex;justify-content:space-between;padding:9px 14px;border-bottom:1px solid var(--line);background:var(--panel);font-family:var(--mono);font-size:12px;color:var(--mut);}
+  .win .row{padding:12px 14px;border-bottom:1px solid var(--line);}
+  .win .row:last-child{border-bottom:0;}
+  .win .k{font-family:var(--mono);font-size:13px;}
+  .diff{font-family:var(--mono);font-size:13px;margin-top:6px;}
+  .diff .m{color:var(--red);} .diff .p{color:var(--mint);}
+
+  .foot{position:fixed;bottom:14px;left:22px;font-size:12px;color:var(--mut);font-family:var(--sans);}
+  .reveal .slide-number{background:transparent;color:var(--mut);font-family:var(--sans);font-size:12px;}
+  .reveal .controls{color:var(--mint);}
+  .reveal .progress{color:var(--mint);}
+</style>
+</head>
+<body>
+<div class="reveal"><div class="slides">
+
+<!-- 1. TITLE + OBJECTIVE + LOOPS -->
+<section>
+  <div class="kicker">MongoDB Hackathon, October 2026</div>
+  <h1 style="margin:12px 0 14px;">Airlock</h1>
+  <p style="font-size:24px;color:#fff;max-width:1120px;line-height:1.35;margin-bottom:24px;"><span class="mint">Objective:</span> agent-written code reaches the repo only after it passes checks the agent cannot see or edit. When a bug still gets through, those checks get stricter, but only if an independent evaluation shows the change helps.</p>
+  <div class="grid3" style="grid-template-columns:1.1fr 1fr 1fr;">
+    <div class="card bd-red">
+      <div class="badge red" style="margin-bottom:12px;">Problem</div>
+      <ul class="small">
+        <li>Agents aim at whatever the test checks, usually the HTTP status.</li>
+        <li>A status-code test can pass while rows are left <span class="red">half written</span>.</li>
+        <li>When a bug escapes, the tests stay the same, so the next one escapes too.</li>
+      </ul>
+    </div>
+    <div class="card bd-mint">
+      <div class="badge mint" style="margin-bottom:12px;">Application loop: ship the feature</div>
+      <ol class="steps">
+        <li>Plan; operator approves the contract</li>
+        <li>Workers code in disposable checkouts</li>
+        <li>Freeze output into an immutable artifact</li>
+        <li>Validate under the active harness</li>
+        <li>Fenced three-way merge, then re-test</li>
+      </ol>
+    </div>
+    <div class="card" style="border-color:var(--amber-bd);">
+      <div class="badge amber" style="margin-bottom:12px;">Harness loop: improve the checks</div>
+      <ol class="steps st-amber">
+        <li>A bug escapes validation</li>
+        <li>Propose a candidate harness version</li>
+        <li>Paired eval: baseline vs. candidate on labeled apps</li>
+        <li class="hl">Promote only if escapes drop and valid work still passes</li>
+      </ol>
+    </div>
+  </div>
+  <p class="caption">All state, evidence, artifacts and harness history live in MongoDB Atlas.</p>
+</section>
+
+<!-- 2. ARCHITECTURE + MONGODB -->
+<section>
+  <div class="kicker">Architecture</div>
+  <h2>An API and a job worker, coordinated through Atlas</h2>
+  <div class="arch">
+    <div class="node side">
+      <div class="sub">Operator</div>
+      <h4>Claude Code plugin</h4>
+      <div class="chips"><span class="chip">airlock_plan</span><span class="chip">airlock_status</span><span class="chip">airlock_delegate</span></div>
+      <div class="xs mut">PreToolUse + Stop hooks</div>
+    </div>
+    <div class="arrow"><span>HTTP via MCP bridge</span><i></i></div>
+    <div class="node">
+      <div class="sub">Control plane</div>
+      <h4>FastAPI service</h4>
+      <ul>
+        <li>Create task, enqueue <span class="tag">plan</span></li>
+        <li>Approve contract by digest</li>
+        <li>Delegate: enqueue <span class="tag">launch</span></li>
+        <li>Promote / roll back harness pointer</li>
+        <li>SSE event feed</li>
+      </ul>
+    </div>
+    <div class="arrow both"><span>state + job in one txn</span><i></i></div>
+    <div class="node db">
+      <div class="sub">Source of truth</div>
+      <h4>MongoDB Atlas</h4>
+      <div class="chips">
+        <span class="chip">projects</span><span class="chip">tasks</span><span class="chip">delegations</span><span class="chip">worker_runs</span>
+        <span class="chip">jobs</span><span class="chip">events</span><span class="chip">artifacts + GridFS</span><span class="chip">validation_runs</span>
+        <span class="chip">integration_runs</span><span class="chip">harness_versions</span><span class="chip">evolution_runs</span>
+      </div>
+    </div>
+    <div class="arrow both"><span>claim by lease, complete by fence</span><i></i></div>
+    <div>
+      <div class="node">
+        <div class="sub">Execution plane</div>
+        <h4>Job worker: 5 kinds</h4>
+        <ul>
+          <li><span class="tag">plan</span> Agent SDK, read-only tools</li>
+          <li><span class="tag">launch</span> run worker, freeze to GridFS</li>
+          <li><span class="tag">validate</span> trusted suite, active harness</li>
+          <li><span class="tag">integrate</span> merge-file, re-test</li>
+          <li><span class="tag">evolve</span> propose + paired eval</li>
+        </ul>
+      </div>
+      <div class="node target">
+        <div class="sub">App under test</div>
+        <div class="xs">Disposable <span class="tag">target_val_&lt;run&gt;</span> DB on a separate replica set</div>
+      </div>
+    </div>
+  </div>
+  <table style="margin-top:22px;">
+    <tr><th>Transactions</th><th>Change streams</th><th>GridFS</th><th>Unique / partial indexes</th><th>$jsonSchema</th><th>Atomic $inc, CAS</th></tr>
+    <tr class="xs"><td>State change, event and next job written atomically</td><td>Push task events to the SSE feed</td><td>Content-addressed artifact tarballs</td><td>Idempotency via dedupe keys</td><td>Strict schemas on all 11 collections</td><td>Leases, fencing tokens, revision CAS</td></tr>
+  </table>
+</section>
+
+<!-- 3. THE HARNESS -->
+<section>
+  <div class="kicker">The harness</div>
+  <h2>A versioned config that decides what "passing" means</h2>
+  <div class="grid2" style="grid-template-columns:1fr 1.1fr;gap:32px;">
+    <div>
+      <div class="xs mut" style="margin-bottom:8px;">harness_versions: v2, <span class="mint">green</span> = added over v1</div>
+<div class="cfg">{ "runner": "bulk",
+  "context": { "include_patterns": ["app/**"] },
+  "tools":   { "profile_key": "bounded-items-worker",
+               "publish": "deny" },
+  "validation": {
+    "required_tags": ["happy_path",
+      <span class="add">"owner_boundary", "idempotency"</span>],
+    "inspections":   ["http_responses",
+      <span class="add">"rows_unchanged_on_rejection",</span>
+      <span class="add">"idempotency_semantics"</span>] } }
+<span class="c">parent_id: hv_v1   config_digest: sha256:...</span>
+<span class="c">created_by_evolution_run_id: evo_...</span></div>
+      <p class="xs mut" style="margin-top:12px;">Versions are immutable. The project's active pointer selects one, so promoting or rolling back just moves the pointer.</p>
+    </div>
+    <div>
+      <div class="xs mint" style="font-weight:600;margin-bottom:10px;">One validation run</div>
+      <ol class="steps">
+        <li>Unpack the frozen candidate from GridFS into a fresh directory</li>
+        <li>Boot the app against a disposable DB, with a stripped env</li>
+        <li><strong>Trusted driver</strong> runs the scenarios selected by <span class="tag">required_tags</span>, snapshots affected rows before and after, and emits raw observations</li>
+        <li><strong>Inspectors</strong> named in <span class="tag">inspections</span> run controller-side and turn observations into checks</li>
+        <li>Any fail: <span class="red">repair_required</span>. Observer error, unknown inspector or no checks: <span class="amber">inconclusive</span>. Otherwise <span class="mint">pass</span>.</li>
+      </ol>
+      <div class="rule">
+        <div><span class="mint">Proposer may change</span><br><span class="mut">tags, inspector selection, context patterns, worker profile</span></div>
+        <div><span class="red">Proposer may not change</span><br><span class="mut">inspector code, eval thresholds, holdout labels, the active pointer</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 4. DEMO: BUG, EVOLUTION, PROMOTION -->
+<section>
+  <div class="kicker">Demo</div>
+  <h2>A partial write that passes v1 and is caught by v2</h2>
+  <div class="grid2" style="grid-template-columns:1fr 1.05fr;">
+    <div>
+      <p class="small" style="margin-bottom:10px;">Delegated feature: <span class="tag">PATCH /api/v1/items/bulk</span></p>
+      <pre><code class="language-python" data-trim data-noescape>for u in body.updates:
+    item = db.items.find_one({"_id": u.id})
+    if item["owner_id"] != user:   # checked too late
+        raise HTTPException(403)
+    db.items.update_one(           # no transaction
+        {"_id": u.id}, {"$set": u.fields})</code></pre>
+      <p class="xs mut">The <span class="tag">owner_boundary</span> scenario sends Alice's row, then Bob's. The app returns <span class="red">403</span>, but Alice's row was already written. v1 only checks the status, so it passes. v2's <span class="tag">rows_unchanged_on_rejection</span> diffs the rows and fails it.</p>
+      <table style="margin-top:12px;">
+        <tr><th>Harness</th><th>Faulty build</th><th>Fixed build</th></tr>
+        <tr><td><strong>v1</strong></td><td><span class="badge red">PASS</span></td><td><span class="badge mint">PASS</span></td></tr>
+        <tr><td><strong>v2</strong></td><td><span class="badge mint">REPAIR_REQUIRED</span></td><td><span class="badge mint">PASS</span></td></tr>
+      </table>
+    </div>
+    <div>
+      <div class="grid3">
+        <div class="metric"><div class="n">3 &rarr; 0</div><div class="l">Escapes</div></div>
+        <div class="metric"><div class="n">0</div><div class="l">False blocks</div></div>
+        <div class="metric"><div class="n">v2</div><div class="l">Promoted</div></div>
+      </div>
+      <p class="xs mut" style="margin-top:10px;text-align:center;">Comparison set: 1 faulty + 1 clean build &times; 3 seeds, per harness</p>
+      <div class="card" style="padding:18px 22px;margin-top:14px;">
+        <div class="xs mint" style="font-weight:600;margin-bottom:8px;">The evaluator promotes only if all four hold</div>
+        <ol class="steps">
+          <li style="font-size:16px;">Escaped failures strictly decrease</li>
+          <li style="font-size:16px;">No more blocks of valid work than baseline</li>
+          <li style="font-size:16px;">Clean build has zero failing checks</li>
+          <li style="font-size:16px;">Wall-clock within 3x of the parent version</li>
+        </ol>
+      </div>
+      <p class="xs mut" style="margin-top:14px;">For a reproducible demo, the faulty and fixed builds are planted and the proposer is deterministic. An Agent SDK proposer plugs into the same schema-checked contract; either way, the evaluator decides.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 5. INTERFACE + STATUS + CLOSE -->
+<section>
+  <div class="kicker">Operated from Claude Code</div>
+  <h2>What holds it together</h2>
+  <div class="grid2">
+    <div>
+      <ul class="small">
+        <li><strong>Hooks:</strong> while a task runs, PreToolUse denies Edit/Write on the registered repo and ad-hoc subagents. If the API is unreachable, it fails closed.</li>
+        <li><strong>Freeze after stop:</strong> output is captured only after the worker exits, as a deterministic tarball hashed into GridFS and verified on read-back.</li>
+        <li><strong>Fail-closed verdicts:</strong> an observer error is <span class="amber">inconclusive</span>, never a pass.</li>
+        <li><strong>Fencing:</strong> a stale integration writer's final write matches zero documents and is dropped.</li>
+      </ul>
+      <p class="xs mut" style="margin-top:6px;"><strong style="color:var(--amber);">Not yet:</strong> container isolation and scoped DB users, an LLM proposer, a held-out corpus with more defect classes.</p>
+    </div>
+    <div class="win">
+      <div class="bar-t"><span>Airlock dashboard</span><span>localhost:8099</span></div>
+      <div class="row chips"><span class="chip">proj_bulk</span><span class="chip">harness v2</span><span class="chip">gen 2</span><span class="chip">epoch 1</span></div>
+      <div class="row"><span class="badge red">FAIL</span> <span class="k">rows_unchanged_on_rejection</span><div class="xs mut" style="margin-top:6px;">Rejected batch left 1 row changed</div></div>
+      <div class="row"><span class="badge amber">PARTIAL WRITE</span> <span class="k">item alice_1</span>
+        <div class="diff"><div class="m">- {"title": "Alice A"}</div><div class="p">+ {"title": "PWNED"}</div></div>
+      </div>
+      <div class="row"><span class="badge mint">ELIGIBLE</span> <span class="k">v1 &rarr; v2</span><div class="xs mut" style="margin-top:6px;">Escaped failures: baseline 3, candidate 0</div></div>
+    </div>
+  </div>
+  <p style="font-size:26px;color:#fff;margin-top:30px;">Checks the agent can't edit, and that improve when bugs get through. <span class="mint">Questions?</span></p>
+</section>
+
+</div></div>
+<div class="foot">Airlock / MongoDB Hackathon 2026</div>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script>
+Reveal.initialize({hash:true,center:false,slideNumber:'c/t',transition:'fade',width:1280,height:760,margin:0.04,plugins:[RevealHighlight]});
+</script>
+</body>
+</html>

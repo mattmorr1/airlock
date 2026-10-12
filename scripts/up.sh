@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 [ -f .env ] || { echo "copy .env.example to .env and set AIRLOCK_MONGO_URI" >&2; exit 1; }
 
 export AIRLOCK_EXECUTION_MODE=local AIRLOCK_HUD_FOLLOW_LATEST=1
+export AIRLOCK_ROOTS="${AIRLOCK_ROOTS:-{\"repo_full\": \"$PWD/target-app\"}}"  # cwd -> project for /airlock:run
 export TARGET_MONGO_URI="${TARGET_MONGO_URI:-mongodb://127.0.0.1:27018/?replicaSet=rs0}"
 export AIRLOCK_TOKEN_OPERATOR="${AIRLOCK_TOKEN_OPERATOR:-op-secret}" AIRLOCK_TOKEN_BRIDGE="${AIRLOCK_TOKEN_BRIDGE:-bridge-secret}"
 export AIRLOCK_TOKEN_HOOK="${AIRLOCK_TOKEN_HOOK:-hook-secret}" AIRLOCK_TOKEN_READER="${AIRLOCK_TOKEN_READER:-reader-secret}"
@@ -33,10 +34,21 @@ fi
 $RUN python -m uvicorn api.main:app --port 8000 >"$LOGS/api.log" 2>&1 &
 $RUN python -m controller.worker_main >"$LOGS/worker.log" 2>&1 &
 $RUN python -m uvicorn ui.server:app --port 8099 >"$LOGS/ui.log" 2>&1 &
-until curl -sf 127.0.0.1:8099/healthz >/dev/null && curl -s -o /dev/null 127.0.0.1:8000/v1/tasks/x; do sleep 0.5; done
+echo "waiting for api + dashboard..."
+for _ in $(seq 1 60); do  # ~30s; a crash-looping service (bad AIRLOCK_MONGO_URI, port in use) must not hang forever
+  curl -sf 127.0.0.1:8099/healthz >/dev/null && curl -s -o /dev/null 127.0.0.1:8000/v1/tasks/x && { ready=1; break; }
+  kill -0 $(jobs -p) 2>/dev/null || break  # a backgrounded service already exited
+  sleep 0.5
+done
+if [ -z "${ready:-}" ]; then
+  echo "services did not come up in 30s (check AIRLOCK_MONGO_URI / ports 8000,8099,27018). recent logs:" >&2
+  tail -n 20 "$LOGS/api.log" "$LOGS/ui.log" 2>/dev/null >&2
+  exit 1
+fi
 
 echo "airlock up ($([ -n "${AIRLOCK_DEV_FIXTURE:-}" ] && echo 'scripted demo mode' || echo 'REAL Claude planner + workers'))"
 echo "  dashboard  http://127.0.0.1:8099"
 echo "  api        http://127.0.0.1:8000   logs: $LOGS/*.log"
+echo "  plugin     cd target-app && claude --plugin-dir ../plugin   (then /airlock:run <request>)"
 echo "  next       uv run --env-file .env python scripts/run_via_api.py   (or /airlock:run in Claude Code)"
 wait

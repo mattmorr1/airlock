@@ -1,7 +1,10 @@
 import asyncio
+import json
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Query, Request
@@ -15,12 +18,14 @@ from api.auth import Cap, Role, require
 from api.errors import ApiError
 from api.events import Bell, router
 from api.idempotency import digest, idempotent
-from api.models import Approve, Approved, ProjectCreate, ProjectCreated, TaskCreate, TaskCreated
+from api.models import Approve, Approved, ProjectCreate, ProjectCreated, ProjectRegister, TaskCreate, TaskCreated
+from controller import artifacts, harness, snapshots
 from controller import db as dbmod
+from controller import planner
 from controller.db import Doc
 from controller.events import Doorbell
 from controller.scheduler import enqueue
-from controller.states import SCHEMA_VERSION, Conflict, JobKind, Prefix, TaskState, append_event, new_id, transition
+from controller.states import SCHEMA_VERSION, Conflict, IntegrationRunState, JobKind, Prefix, TaskState, append_event, new_id, transition
 
 
 @asynccontextmanager
@@ -85,18 +90,77 @@ async def create_project(body: ProjectCreate, db: DB, key: Key, actor: Annotated
     return await idempotent(db, "-", actor, "project.create", key, digest("POST /v1/projects", body.model_dump(mode="json")), fn)
 
 
+@app.post("/v1/projects/register", status_code=201, response_model=ProjectCreated)
+async def register_project(body: ProjectRegister, db: DB, actor: Annotated[Role, Depends(require(Cap.PROJECT_REGISTER))]) -> Doc:
+    """Idempotently register the repo at `cwd` so /airlock:run needs only a request: freeze its tree as the baseline,
+    attach the bulk v1 harness, and record `repository.root_path` for DB-driven cwd resolution."""
+    root = os.path.realpath(body.cwd)
+    if not os.path.isdir(root):
+        raise ApiError(422, "INVALID_REQUEST", f"{body.cwd} is not a directory on the API host")
+    if (existing := await db["projects"].find_one({"repository.root_path": root}, {"_id": 1}, sort=[("created_at", -1)])) is not None:
+        return {"project_id": existing["_id"]}
+
+    def seed() -> str:
+        from common.db import col
+        pid = new_id(Prefix.PROJECT)
+        base = artifacts.put_tree(snapshots.read_dir_tree(Path(root)), kind="baseline", project_id=pid, created_by=actor.value)
+        hv = harness.bootstrap_bulk_v1(pid)
+        col("projects").insert_one({
+            "_id": pid, "schema_version": SCHEMA_VERSION, "name": body.name or Path(root).name, "created_at": datetime.now(UTC),
+            "repository": {"registered_root_id": f"repo_{pid[-6:]}", "default_branch": "main", "root_path": root},
+            "baseline_artifact_id": base["_id"], "active_harness_version_id": hv["_id"],
+            "harness_generation": 1, "constraint_epoch": 1, "validated_harness_ids": [hv["_id"]], "event_seq": 0, "revision": 1})
+        return pid
+
+    return {"project_id": await asyncio.to_thread(seed)}
+
+
+async def resolve_base(db: AsyncDatabase[Doc], body: TaskCreate) -> tuple[str, str]:
+    """(project_id, base_artifact_id) with defaults applied; 404 for an unknown project or an artifact outside it."""
+    if (pid := body.project_id) is None:
+        if body.cwd is None:
+            raise ApiError(422, "INVALID_REQUEST", "give project_id or cwd")
+        roots = sorted(((r, p) for r, p in json.loads(os.environ.get("AIRLOCK_ROOTS") or "{}").items() if hooks.inside(body.cwd, p)),
+                       key=lambda rp: len(rp[1]), reverse=True)
+        proj = await db["projects"].find_one({"repository.registered_root_id": roots[0][0]}, {"_id": 1}, sort=[("created_at", -1)]) if roots else None
+        if proj is None:  # fall back to DB-registered root paths (auto-registered projects); longest containing path wins
+            matches = [p async for p in db["projects"].find({"repository.root_path": {"$type": "string"}}, {"repository.root_path": 1})
+                       if hooks.inside(body.cwd, p["repository"]["root_path"])]
+            proj = max(matches, key=lambda p: len(p["repository"]["root_path"]), default=None)
+        if proj is None:
+            raise ApiError(404, "NOT_FOUND", f"no project is registered for {body.cwd}; call /v1/projects/register (airlock_register) or pass project_id")
+        pid = proj["_id"]
+    proj = await find(db, "projects", pid)
+    if (art := body.base_artifact_id) is None:
+        last = await db["integration_runs"].find_one({"project_id": pid, "status": IntegrationRunState.ACCEPTED}, {"result_artifact_id": 1},
+                                                     sort=[("created_at", -1)])
+        return pid, last["result_artifact_id"] if last else proj["baseline_artifact_id"]
+    if art != proj["baseline_artifact_id"] and await db["artifacts"].count_documents({"_id": art, "project_id": pid}, limit=1) == 0:
+        raise ApiError(404, "NOT_FOUND", f"artifact {art} is not in project {pid}; omit base_artifact_id to use its latest integrated tree")
+    return pid, art
+
+
 @app.post("/v1/tasks", status_code=202, response_model=TaskCreated)
 async def create_task(body: TaskCreate, db: DB, key: Key, actor: Annotated[Role, Depends(require(Cap.TASK_CREATE))]) -> Doc:
+    pid, base = await resolve_base(db, body)
+    contract = None if body.contract is None else planner.validate(body.request, body.contract)
+    if isinstance(contract, list):
+        raise ApiError(422, "CONTRACT_INVALID", "; ".join(contract))
+    planned = {"status": TaskState.PLANNED, "contract_version": 1, "contract": contract, "contract_digest": planner.digest(contract)} if contract else \
+        {"status": TaskState.DRAFT, "contract_version": 0, "contract": None, "contract_digest": None}
+
     async def fn(s: AsyncClientSession) -> Doc:
-        await find(db, "projects", body.project_id, s)
         tid = new_id(Prefix.TASK)
-        await db["tasks"].insert_one({"_id": tid, "schema_version": SCHEMA_VERSION, **body.model_dump(), "status": TaskState.DRAFT, "revision": 1,
-                                      "contract_version": 0, "contract": None, "contract_digest": None, "approval": None, "event_seq": 0,
+        await db["tasks"].insert_one({"_id": tid, "schema_version": SCHEMA_VERSION, "project_id": pid, "parent_session_id": body.parent_session_id,
+                                      "request": body.request, "base_artifact_id": base, "revision": 1, **planned, "approval": None, "event_seq": 0,
                                       "delegation_ids": [], "final_artifact_id": None, "final_validation_run_id": None, "created_at": datetime.now(UTC)},
                                      session=s)
-        job_id = await enqueue(s, db, JobKind.PLAN, {"task_id": tid}, f"{tid}:plan", body.project_id, tid)
+        if contract:
+            await append_event(s, tid, db["tasks"], "task.planned", actor, {"contract_digest": planned["contract_digest"], "author": "session"})
+            return {"task_id": tid, "status": TaskState.PLANNED.value, "job_id": None}
+        job_id = await enqueue(s, db, JobKind.PLAN, {"task_id": tid}, f"{tid}:plan", pid, tid)
         return {"task_id": tid, "status": TaskState.DRAFT.value, "job_id": job_id}
-    return await idempotent(db, body.project_id, actor, "task.create", key, digest("POST /v1/tasks", body.model_dump(mode="json")), fn)
+    return await idempotent(db, pid, actor, "task.create", key, digest("POST /v1/tasks", body.model_dump(mode="json")), fn)
 
 
 @app.post("/v1/tasks/{task_id}/approve", response_model=Approved)
@@ -123,8 +187,26 @@ async def get_task(task_id: str, db: DB, bell: Bell, _: Annotated[Role, Depends(
     while task["event_seq"] <= seen and (left := deadline - loop.time()) > 0:
         await bell.wait(ev, left)
         ev, task = bell.arm(task_id), await find(db, "tasks", task_id)
-    return {"task": task | {"approval_required": task["status"] == TaskState.PLANNED},
-            "delegations": await db["delegations"].find({"task_id": task_id}).sort("_id").to_list()}
+    dels = await db["delegations"].find({"task_id": task_id}).sort("_id").to_list()
+    failed_job = await db["jobs"].find_one({"task_id": task_id, "status": "failed"}, {"kind": 1, "last_error": 1}, sort=[("created_at", -1)])
+    live = task["status"] in (TaskState.APPROVED, TaskState.RUNNING)
+    launchable = [*hooks.ready_keys(task, dels), *(d["assignment_key"] for d in dels if d["status"] == "repair_required")] if live else []
+    return {"task": task | {"approval_required": task["status"] == TaskState.PLANNED, "launchable": launchable,
+                            "next": hooks.next_step(task, dels) if live else None,
+                            "last_error": f"{failed_job['kind']}: {failed_job.get('last_error')}" if failed_job else None},
+            "delegations": dels}
+
+
+@app.get("/v1/projects")
+async def list_projects(db: DB, _: Annotated[Role, Depends(require(Cap.READ))]) -> list[Doc]:
+    return await db["projects"].find({}, {"name": 1, "baseline_artifact_id": 1, "constraint_epoch": 1, "created_at": 1},
+                                     sort=[("created_at", -1)]).limit(20).to_list()
+
+
+@app.get("/v1/projects/{project_id}/tasks")
+async def list_tasks(project_id: str, db: DB, _: Annotated[Role, Depends(require(Cap.READ))]) -> list[Doc]:
+    return await db["tasks"].find({"project_id": project_id}, {"request": 1, "status": 1, "final_artifact_id": 1, "created_at": 1},
+                                  sort=[("created_at", -1)]).limit(20).to_list()
 
 
 @app.get("/v1/jobs/{job_id}")

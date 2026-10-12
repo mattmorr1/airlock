@@ -5,11 +5,14 @@ from fastapi.responses import JSONResponse
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from api.auth import Cap, Role, require
+from api.errors import ApiError
 from api.idempotency import digest, idempotent
 from api.main import DB, Key, app, error, find
 from api.models import Rollback
 from controller.db import Doc
 from controller.policies import NotValidated, revoke, rollback
+from controller.scheduler import close_task
+from controller.states import TaskState
 
 router = APIRouter()
 
@@ -26,6 +29,17 @@ async def rollback_project(project_id: str, body: Rollback, db: DB, key: Key, ac
         await rollback(s, db, project_id, body.harness_version_id, actor)
         return {"project_id": project_id, "active_harness_version_id": body.harness_version_id}
     return await idempotent(db, project_id, actor, "project.rollback", key, digest(f"POST /v1/projects/{project_id}/rollback", body.model_dump()), fn)
+
+
+@router.post("/v1/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str, db: DB, key: Key, actor: Annotated[Role, Depends(require(Cap.TASK_CANCEL))]) -> Doc:
+    async def fn(s: AsyncClientSession) -> Doc:
+        task = await find(db, "tasks", task_id, s)
+        if not await close_task(s, db, task_id, TaskState.CANCELLED, actor, {"reason": "operator"}):
+            raise ApiError(409, "STALE_REVISION", f"task {task_id} is {task['status']} and cannot be cancelled")
+        return {"task_id": task_id, "status": TaskState.CANCELLED.value}
+    project = (await find(db, "tasks", task_id))["project_id"]
+    return await idempotent(db, project, actor, "task.cancel", key, digest(f"POST /v1/tasks/{task_id}/cancel"), fn)
 
 
 @router.post("/v1/projects/{project_id}/revoke")

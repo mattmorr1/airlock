@@ -1,7 +1,7 @@
 {
   "name": "mongohack",
   "description": "Local marketplace for the Airlock plugin",
-  "owner": {"name": "mongohack"},
+  "owner": {"name": "mattmorr1"},
   "plugins": [
     {
       "name": "airlock",

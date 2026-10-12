@@ -21,9 +21,9 @@ from common.hashing import FileTree
 from controller import artifacts
 
 # Runtime/noise paths never captured into an artifact.
-IGNORE_DIRS = {".git", "__pycache__", ".venv", ".pytest_cache", "node_modules"}
+IGNORE_DIRS = {".git", ".claude", "__pycache__", ".venv", ".pytest_cache", "node_modules"}
 IGNORE_SUFFIXES = {".pyc", ".pyo"}
-IGNORE_NAMES = {"app.db", "app.log", "observations.json"}
+IGNORE_NAMES = {"app.db", "app.log", "observations.json", "CLAUDE.md"}
 
 
 def read_dir_tree(root: Path) -> FileTree:

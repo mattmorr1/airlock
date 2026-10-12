@@ -135,6 +135,23 @@ async def _fail_owner(s: AsyncClientSession, db: AsyncDatabase[Doc], job: Doc, e
             await transition(s, db[coll], id_, doc["revision"], to, set_)
     await append_event(s, tid, db["tasks"], "job.failed", "controller",
                        {"job_id": job["_id"], "kind": job["kind"], "error": error, "owners": {id_: to for _, id_, to, _ in moves}})
+    if job["kind"] == JobKind.LAUNCH:  # every contract assignment is required, so a failed delegation fails its task
+        await close_task(s, db, tid, TaskState.FAILED, "controller", {"reason": "delegation_failed", "delegation_id": p["delegation_id"]})
+
+
+async def close_task(s: AsyncClientSession, db: AsyncDatabase[Doc], task_id: str, to: TaskState, actor_id: str, payload: Doc) -> bool:
+    """Move an open task to failed/cancelled and cancel its unfinished delegations and worker runs; False if it was already terminal."""
+    if (task := await db["tasks"].find_one({"_id": task_id}, {"status": 1, "revision": 1}, session=s)) is None:
+        raise LookupError(f"task {task_id} not found")
+    if to not in ALLOWED[Entity.TASK].get(task["status"], frozenset()):
+        return False
+    for coll, cancelled in (("delegations", DelegationState.CANCELLED), ("worker_runs", WorkerRunState.CANCELLED)):
+        for d in await db[coll].find({"task_id": task_id}, {"status": 1, "revision": 1}, session=s).to_list():
+            if cancelled in ALLOWED[Entity(coll)].get(d["status"], frozenset()):
+                await transition(s, db[coll], d["_id"], d["revision"], cancelled)
+    await transition(s, db["tasks"], task_id, task["revision"], to)
+    await append_event(s, task_id, db["tasks"], f"task.{to.value}", actor_id, payload)
+    return True
 
 
 async def _integration_done(s: AsyncClientSession, db: AsyncDatabase[Doc], task_id: str) -> None:

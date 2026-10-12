@@ -93,13 +93,22 @@ async def test_unconfigured_root_denies_writes(client: httpx.AsyncClient, db: As
 async def test_planned_task_is_not_gated_and_stop_waits_for_operator(client: httpx.AsyncClient, db: AsyncDatabase[Doc], tmp_path: Path) -> None:
     sid, tid = await session_task(client, db, TaskState.PLANNED)
     assert await pre(client, sid, "Edit", file_path=str(tmp_path / "a.py")) == {"active": False}
-    assert await stop(client, sid) == {"active": False, "systemMessage": f"Airlock task {tid} awaiting operator: ! airlock -y approve {tid}"}
+    assert await stop(client, sid) == {"active": False, "systemMessage": f"Airlock task {tid} awaiting operator: review with ! airlock show {tid}, "
+                                                          f"then ! airlock -y approve {tid}"}
 
 
 async def test_stop_allows_terminal_tasks(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
     for status in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED):
         sid, _ = await session_task(client, db, status)
         assert await stop(client, sid) == {"active": False}
+
+
+async def test_stop_releases_running_task_with_nothing_launchable(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
+    sid, tid = await session_task(client, db, TaskState.RUNNING)
+    await db["delegations"].insert_one({"_id": new_id(Prefix.DELEGATION), "schema_version": 1, "project_id": "proj_x", "task_id": tid,
+                                        "assignment_key": "schema", "status": DelegationState.FAILED, "attempt": 2})
+    out = await stop(client, sid)
+    assert out["active"] is False and "decision" not in out and f"airlock -y cancel {tid}" in out["systemMessage"]
 
 
 async def test_stop_blocks_approved_task_with_ready_assignment(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
@@ -135,8 +144,16 @@ async def tool(name: str, **args: object) -> Doc:
     return res.structured_content
 
 
-async def test_bridge_exposes_exactly_three_tools() -> None:
-    assert sorted(t.name for t in await server.mcp.list_tools()) == ["airlock_delegate", "airlock_plan", "airlock_status"]
+def test_vendored_plugin_bridge_matches_canonical() -> None:
+    """The plugin ships a self-contained copy of the bridge (marketplace install can't reach the repo). Keep them identical."""
+    repo = Path(__file__).resolve().parents[1]
+    assert (repo / "plugin/bridge/server.py").read_bytes() == (repo / "bridge/server.py").read_bytes(), \
+        "plugin/bridge/server.py drifted from bridge/server.py; re-copy it (cp bridge/server.py plugin/bridge/server.py)"
+
+
+async def test_bridge_exposes_exactly_five_tools() -> None:
+    assert sorted(t.name for t in await server.mcp.list_tools()) == \
+        ["airlock_delegate", "airlock_plan", "airlock_register", "airlock_run", "airlock_status"]
 
 
 @pytest.mark.usefixtures("bridge")
@@ -145,9 +162,22 @@ async def test_bridge_plan_status_and_delegate(client: httpx.AsyncClient, db: As
     planned = await tool("airlock_plan", project_id=proj, parent_session_id="sess_bridge", request="Add login", base_artifact_id="art_base_01")
     task = await db["tasks"].find_one({"_id": planned["task_id"]})
     assert task is not None and (task["parent_session_id"], task["status"], planned["status"]) == ("sess_bridge", "draft", "draft")
-    assert (await tool("airlock_status", task_id=planned["task_id"]))["task"]["status"] == "draft"
+    status = await tool("airlock_status", task_id=planned["task_id"])
+    assert status["status"] == "draft" and status["summary"].startswith("draft - ")
+    assert (await tool("airlock_status", task_id=planned["task_id"], full=True))["task"]["status"] == "draft"
     tid, _, _ = await approved_task(client, db, "bridge-deleg")
     launched = await tool("airlock_delegate", task_id=tid, assignment_key="schema")
     assert (launched["status"], launched["attempt"]) == ("queued", 1)
     with pytest.raises(ToolError, match=r"409: .*STALE_REVISION"):
         await server.mcp.call_tool("airlock_delegate", {"task_id": tid, "assignment_key": "schema"})
+
+
+@pytest.mark.usefixtures("bridge")
+async def test_bridge_run_stops_for_approval_then_launches_ready_work(client: httpx.AsyncClient, db: AsyncDatabase[Doc]) -> None:
+    _, tid = await session_task(client, db, TaskState.PLANNED)
+    out = await tool("airlock_run", task_id=tid, budget_seconds=1)
+    assert (out["status"], out["approve"], out["contract"]) == ("planned", f"! airlock -y approve {tid}", CONTRACT)
+    tid, _, _ = await approved_task(client, db, "bridge-run")
+    out = await tool("airlock_run", task_id=tid, budget_seconds=0)
+    assert out["log"] == ["launched schema attempt 1"] and "budget spent" in out["note"]
+    assert next((a["key"], a["status"]) for a in out["assignments"]) == ("schema", "running")
